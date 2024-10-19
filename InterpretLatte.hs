@@ -364,7 +364,7 @@ showTree v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
-  interpret v tree
+  -- interpret v tree
 
 usage :: IO ()
 usage = do

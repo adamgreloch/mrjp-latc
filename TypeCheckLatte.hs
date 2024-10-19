@@ -127,17 +127,6 @@ data TypeError' a
       a
       -- | encountered type
       Type
-  | -- | Thrown when expression (r-value) is passed as a reference argument
-    -- to a function
-    RValuePassedAsRef
-      -- | error position
-      a
-      -- | function identifier
-      Ident
-      -- | r-value passed
-      Expr
-      -- | function reference argument that got an r-value instead
-      Arg
   | -- | Error type wrapper for statement pretty printing
     StmtError
       -- | statement in which type error error was thrown
@@ -211,6 +200,7 @@ instance Show TypeError where
   show (SigTypeMismatch p fn tp extp) = "signature type mismatch for function " ++ show fn ++ ". Got " ++ typeAt tp ++ ", but expected " ++ typeFrom extp
   show (SigArgCountMismatch p fn n p' exn) = "passed " ++ show n ++ " argument(s) to function " ++ show fn ++ " at " ++ at p ++ ", but expected " ++ show exn ++ " as declared at " ++ at p'
   show (StmtError stmt err) = "in statement:\n" ++ printStmt stmt ++ "\n" ++ show err
+  show (UnexpectedBoolType p) = "unexpected boolean at " ++ at p
   show UnexpectedError = "Unexpected typechecker error. This should not happen..."
 
 typeCheckExpr :: Expr -> TC Type
@@ -249,7 +239,7 @@ typeCheckExpr (EMul p e1 _ e2) = expectType2 (Int p) e1 e2
 typeCheckExpr (EAdd p e1 (Minus _) e2) = expectType2 (Int p) e1 e2
 typeCheckExpr (EAdd p e1 (Plus _) e2) = expectSameNotBoolType e1 e2
 typeCheckExpr (ERel p e1 _ e2) = do
-  expectSameNotBoolType e1 e2
+  expectSameType e1 e2
   return (Bool p)
 typeCheckExpr (EAnd p e1 e2) = expectType2 (Bool p) e1 e2
 typeCheckExpr (EOr p e1 e2) = expectType2 (Bool p) e1 e2
@@ -310,17 +300,29 @@ checkIfMain (FnDef p ret fn args b)
   | not $ ret ~ Int BNFC'NoPosition = throwError (BadMainRetType p ret)
   | otherwise = return ()
 
-typeCheckFnDef :: TopDef -> TC TEnv
-typeCheckFnDef (FnDef p ret fn args b) = do
+addFnDefsToEnv :: [TopDef] -> TC TEnv
+addFnDefsToEnv ((FnDef p ret fn args b) : t) = do
   checkIfMain (FnDef p ret fn args b)
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
-      env' <- asks (insert fn (TFn p ret args))
-      local (const $ setRetType ret $ addArgsToTEnv args env') (typeCheckBlock b)
+      env <- asks (insert fn (TFn p ret args))
+      local (const env) (addFnDefsToEnv t)
+addFnDefsToEnv [] = ask
+
+typeCheckFnDefs :: [TopDef] -> TC TEnv
+typeCheckFnDefs ((FnDef p ret fn args b) : t) = do
+  checkIfMain (FnDef p ret fn args b)
+  if not $ unique args
+    then throwError (ArgNameNotUniqueInFnDecl p fn)
+    else do
+      env <- ask -- Assumes that FnDef is already in the env
+      local (const $ setRetType ret $ addArgsToTEnv args env) (typeCheckBlock b)
+      local (const env) (typeCheckFnDefs t)
   where
     addArgsToTEnv :: [Arg] -> TEnv -> TEnv
     addArgsToTEnv args tenv = foldr (\arg acc -> insert (argName arg) (TVar p (argType arg)) acc) tenv args
+typeCheckFnDefs [] = ask
 
 expectItemType :: BNFC'Position -> Type -> Item -> TC TEnv
 expectItemType p extp item =
@@ -336,11 +338,10 @@ expectItemType p extp item =
         else throwError (TypeMismatch tp extp)
 
 typeCheckTopDefs :: [TopDef] -> TC TEnv
-typeCheckTopDefs (h : t) = do
+typeCheckTopDefs tds = do
   -- FnDef is the only TopDef possible
-  env' <- typeCheckFnDef h
-  local (const env') (typeCheckTopDefs t)
-typeCheckTopDefs [] = ask
+  env' <- addFnDefsToEnv tds
+  local (const env') (typeCheckFnDefs tds)
 
 typeCheckBlock :: Block -> TC TEnv
 typeCheckBlock (Block p stmts) =
@@ -357,20 +358,42 @@ typeCheckStmts [] = ask
 
 typeCheckStmt :: Stmt -> TC TEnv
 typeCheckStmt (Empty _) = ask
+typeCheckStmt (BStmt p b) = typeCheckBlock b
 typeCheckStmt (Decl p tp items) = do
   -- TODO check if this does what i think it does
   expectItemTypes p tp items
-    where
-      expectItemTypes p tp (h:t) = do
-        env' <- expectItemType p tp h
-        local (const env') (expectItemTypes p tp t)
-      expectItemTypes p tp [] = ask
+  where
+    expectItemTypes p tp (h : t) = do
+      env' <- expectItemType p tp h
+      local (const env') (expectItemTypes p tp t)
+    expectItemTypes p tp [] = ask
 typeCheckStmt (Ass p id e) = do
   tp <- typeCheckExpr e
   env <- ask
   case lookup id env of
     (Just (TVar p' extp)) ->
       if extp ~ tp
+        then ask
+        else throwError (TypeMismatch tp extp)
+    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
+    Nothing -> throwError (UndefinedVar p id)
+-- FIXME really redundant. take a while to refactor this
+typeCheckStmt (Incr p id) = do
+  env <- ask
+  let extp = Int p
+  case lookup id env of
+    (Just (TVar p' tp)) ->
+      if tp ~ extp
+        then ask
+        else throwError (TypeMismatch tp extp)
+    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
+    Nothing -> throwError (UndefinedVar p id)
+typeCheckStmt (Decr p id) = do
+  env <- ask
+  let extp = Int p
+  case lookup id env of
+    (Just (TVar p' tp)) ->
+      if tp ~ extp
         then ask
         else throwError (TypeMismatch tp extp)
     (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
