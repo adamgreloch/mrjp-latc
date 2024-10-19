@@ -1,0 +1,16 @@
+*.hi
+*.o
+*.log
+*.aux
+*.dvi
+*.bak
+*.info
+Doc*
+Par*
+Print*
+Skel*
+Lex*
+ErrM*
+TestLatte*
+InterpretLatte
+!*.hs
