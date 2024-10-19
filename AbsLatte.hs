@@ -12,10 +12,10 @@ module AbsLatte where
 
 import Prelude (Integer, String)
 import qualified Prelude as C
-  ( Eq, Ord, Show, Read
-  , Functor, Foldable, Traversable
-  , Int, Maybe(..)
-  )
+  -- ( Eq, Ord, Show, show, foldl, Read
+  -- , Functor, Foldable, Traversable
+  -- , Int, Maybe(..)
+  -- )
 import qualified Data.String
 
 type Program = Program' BNFC'Position
@@ -57,7 +57,15 @@ data Item' a = NoInit a Ident | Init a Ident (Expr' a)
 type Type = Type' BNFC'Position
 data Type' a
     = Int a | Str a | Bool a | Void a | Fun a (Type' a) [Type' a]
-  deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
+  deriving (C.Eq, C.Ord, C.Read, C.Functor, C.Foldable, C.Traversable)
+
+instance C.Show (Type' a) where
+  show (Int _) = "int"
+  show (Str _) = "string"
+  show (Bool _) = "boolean"
+  show (Void _) = "void"
+  show (Fun _ rt ts) = C.show rt C.++ "(" C.++ C.foldr (\t acc -> C.show t C.++ ", " C.++ acc) "" ts
+
 
 type Expr = Expr' BNFC'Position
 data Expr' a
@@ -89,7 +97,10 @@ data RelOp' a = LTH a | LE a | GTH a | GE a | EQU a | NE a
   deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
 
 newtype Ident = Ident String
-  deriving (C.Eq, C.Ord, C.Show, C.Read, Data.String.IsString)
+  deriving (C.Eq, C.Ord, C.Read, Data.String.IsString)
+
+instance C.Show Ident where
+  show (Ident s) = s
 
 -- | Start position (line, column) of something.
 

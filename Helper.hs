@@ -10,6 +10,7 @@ type Verbosity = Int
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
+infixr 9 ~
 (~) :: Type -> Type -> Bool
 (~) = eq
   where
@@ -25,7 +26,7 @@ argType (Arg _ tp _) = tp
 isLValue :: Expr -> Bool
 isLValue e = case e of
   (EVar _ _) -> True
-  _ -> False
+  _othr -> False
 
 argName :: Arg -> Ident
 argName (Arg _ _ name) = name
@@ -33,6 +34,10 @@ argName (Arg _ _ name) = name
 at :: BNFC'Position -> String
 at Nothing = "?:?"
 at (Just (line, col)) = show line ++ ":" ++ show col
+
+from :: BNFC'Position -> String
+from Nothing = ""
+from (Just (line, col)) = "from " ++ show line ++ ":" ++ show col
 
 typeAt :: Type -> String
 typeAt t =
@@ -42,11 +47,11 @@ typeAt t =
       p -> " at " ++ at p
 
 typeFrom :: Type -> String
-typeFrom t = show t ++ " from " ++ at (hasPosition t)
+typeFrom t = show t ++ " " ++ from (hasPosition t)
 
 printLineNr :: BNFC'Position -> String
 printLineNr Nothing = "?"
-printLineNr (Just (line, col)) = show line
+printLineNr (Just (line, _)) = show line
 
 printStmt :: Stmt -> String
 printStmt stmt =

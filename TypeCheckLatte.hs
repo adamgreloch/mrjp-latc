@@ -5,7 +5,6 @@
 module TypeCheckLatte (typeCheckProgram) where
 
 import AbsLatte
-import Control.Monad (when)
 import Control.Monad.Except
   ( ExceptT,
     MonadError (throwError),
@@ -23,7 +22,6 @@ import Data.Map (Map)
 import Data.Map qualified as M
 import GHC.IO.Handle.FD (stderr)
 import Helper
-import PrintLatte
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
 import Prelude hiding (lookup)
@@ -169,10 +167,10 @@ initTEnv =
     nop = BNFC'NoPosition
 
 lookup :: Ident -> TEnv -> Maybe VPType
-lookup id (_, _, mp) = M.lookup id mp
+lookup idt (_, _, mp) = M.lookup idt mp
 
 insert :: Ident -> VPType -> TEnv -> TEnv
-insert id vpt (ret, bp, mp) = (ret, bp, M.insert id vpt mp)
+insert idt vpt (ret, bp, mp) = (ret, bp, M.insert idt vpt mp)
 
 setRetType :: Type -> TEnv -> TEnv
 setRetType ret (_, bp, mp) = (ret, bp, mp)
@@ -186,10 +184,16 @@ blockPos (_, bp, _) = bp
 nextRetType :: TEnv -> Type
 nextRetType (ret, _, _) = ret
 
+readerSeq :: (MonadReader r m) => (a -> m r) -> [a] -> m r
+readerSeq mf (h : t) = do
+  env <- mf h
+  local (const env) (readerSeq mf t)
+readerSeq _ [] = ask
+
 instance Show TypeError where
   show (UndefinedVar p var) = "undefined variable " ++ show var ++ " at " ++ at p
   show (UndefinedFn p fn) = "undefined function " ++ show fn ++ " at " ++ at p
-  show (NameNotUniqueInBlock p id p') = "redefinition of name " ++ show id ++ " at " ++ at p ++ " that was already declared in that block at " ++ at p'
+  show (NameNotUniqueInBlock p idt p') = "redefinition of name " ++ show idt ++ " at " ++ at p ++ " that was already declared in that block at " ++ at p'
   show (ArgNameNotUniqueInFnDecl p fn) = "argument names for function " ++ show fn ++ " declared at " ++ at p ++ " are not unique"
   show (TypeMismatch found expected) = "expected " ++ typeFrom expected ++ " but got " ++ typeAt found
   show (RetTypeMismatch found expected) = "expected to return " ++ typeFrom expected ++ " but got " ++ typeAt found
@@ -197,7 +201,7 @@ instance Show TypeError where
   show (VarUsedAsFn p var p') = "variable " ++ show var ++ " previously declared at " ++ at p' ++ " used as a function at " ++ at p
   show (BadMainSig p n) = at p ++ ": main has " ++ show n ++ " argument(s) but should have 0"
   show (BadMainRetType p t) = at p ++ ": main has return type " ++ show t ++ " but should have int"
-  show (SigTypeMismatch p fn tp extp) = "signature type mismatch for function " ++ show fn ++ ". Got " ++ typeAt tp ++ ", but expected " ++ typeFrom extp
+  show (SigTypeMismatch _ fn tp extp) = "signature type mismatch for function " ++ show fn ++ ". Got " ++ typeAt tp ++ ", but expected " ++ typeFrom extp
   show (SigArgCountMismatch p fn n p' exn) = "passed " ++ show n ++ " argument(s) to function " ++ show fn ++ " at " ++ at p ++ ", but expected " ++ show exn ++ " as declared at " ++ at p'
   show (StmtError stmt err) = "in statement:\n" ++ printStmt stmt ++ "\n" ++ show err
   show (UnexpectedBoolType p) = "unexpected boolean at " ++ at p
@@ -237,9 +241,9 @@ typeCheckExpr (Neg p e) = expectType (Int p) e
 typeCheckExpr (Not p e) = expectType (Bool p) e
 typeCheckExpr (EMul p e1 _ e2) = expectType2 (Int p) e1 e2
 typeCheckExpr (EAdd p e1 (Minus _) e2) = expectType2 (Int p) e1 e2
-typeCheckExpr (EAdd p e1 (Plus _) e2) = expectSameNotBoolType e1 e2
+typeCheckExpr (EAdd _ e1 (Plus _) e2) = expectSameNotBoolType e1 e2
 typeCheckExpr (ERel p e1 _ e2) = do
-  expectSameType e1 e2
+  _ <- expectSameType e1 e2
   return (Bool p)
 typeCheckExpr (EAnd p e1 e2) = expectType2 (Bool p) e1 e2
 typeCheckExpr (EOr p e1 e2) = expectType2 (Bool p) e1 e2
@@ -249,7 +253,7 @@ expectSameNotBoolType e1 e2 = do
   t <- expectSameType e1 e2
   case t of
     (Bool p) -> throwError (UnexpectedBoolType p)
-    _ -> return t
+    _otherwise -> return t
 
 expectSameType :: Expr -> Expr -> TC Type
 expectSameType e1 e2 = do
@@ -258,7 +262,7 @@ expectSameType e1 e2 = do
 
 expectType2 :: Type -> Expr -> Expr -> TC Type
 expectType2 extp e1 e2 = do
-  expectType extp e1
+  _ <- expectType extp e1
   expectType extp e2
 
 expectType :: Type -> Expr -> TC Type
@@ -269,24 +273,45 @@ expectType extp e = do
     else throwError (TypeMismatch tp extp)
 
 expectUniqueIdent :: BNFC'Position -> Ident -> TC ()
-expectUniqueIdent p id = do
+expectUniqueIdent p idt = do
   env <- ask
-  case lookup id env of
+  case lookup idt env of
     Nothing -> return ()
     Just vpt ->
       let p' = hasPosition vpt
        in if p' < blockPos env
             then return ()
-            else throwError (NameNotUniqueInBlock p id p')
+            else throwError (NameNotUniqueInBlock p idt p')
+
+expectIdentType :: BNFC'Position -> Ident -> Type -> TC TEnv
+expectIdentType p idt extp = do
+  env <- ask
+  case lookup idt env of
+    (Just (TVar _ tp)) ->
+      if extp ~ tp
+        then ask
+        else throwError (TypeMismatch tp extp)
+    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p idt p')
+    Nothing -> throwError (UndefinedVar p idt)
+
+verifyNextRetType :: Type -> TC TEnv
+verifyNextRetType tp = do
+  env <- ask
+  let extp = nextRetType env
+  if extp ~ tp
+    then ask
+    else throwError (RetTypeMismatch tp extp)
 
 typeCheckProgram :: Int -> Program -> IO ()
 typeCheckProgram v (Program _ tds) = do
   putStrV v "\n[Type check]\n"
   case runReader (runExceptT (typeCheckTopDefs tds)) initTEnv of
     (Left te) -> do
-      hPutStrLn stderr ("Type check error " ++ show te)
+      hPutStrLn stderr ("ERROR\nType check error " ++ show te)
       exitFailure
-    (Right tenv) -> putStrV v ("Type check passed:\n" ++ show tenv)
+    (Right tenv) -> do
+      hPutStrLn stderr "OK\n"
+      putStrV v (show tenv)
 
 unique :: [Arg] -> Bool
 unique args = length args == length (nubBy eq args)
@@ -294,35 +319,32 @@ unique args = length args == length (nubBy eq args)
     eq a1 a2 = argName a1 == argName a2
 
 checkIfMain :: TopDef -> TC ()
-checkIfMain (FnDef p ret fn args b)
+checkIfMain (FnDef p ret fn args _)
   | fn /= Ident "main" = return ()
   | not (null args) = throwError (BadMainSig p (length args))
   | not $ ret ~ Int BNFC'NoPosition = throwError (BadMainRetType p ret)
   | otherwise = return ()
 
-addFnDefsToEnv :: [TopDef] -> TC TEnv
-addFnDefsToEnv ((FnDef p ret fn args b) : t) = do
+addFnDefToEnv :: TopDef -> TC TEnv
+addFnDefToEnv (FnDef p ret fn args b) = do
   checkIfMain (FnDef p ret fn args b)
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
-      env <- asks (insert fn (TFn p ret args))
-      local (const env) (addFnDefsToEnv t)
-addFnDefsToEnv [] = ask
+      asks (insert fn (TFn p ret args))
 
-typeCheckFnDefs :: [TopDef] -> TC TEnv
-typeCheckFnDefs ((FnDef p ret fn args b) : t) = do
+typeCheckFnDef :: TopDef -> TC TEnv
+typeCheckFnDef (FnDef p ret fn args b) = do
   checkIfMain (FnDef p ret fn args b)
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
       env <- ask -- Assumes that FnDef is already in the env
-      local (const $ setRetType ret $ addArgsToTEnv args env) (typeCheckBlock b)
-      local (const env) (typeCheckFnDefs t)
+      _ <- local (const $ setRetType ret $ addArgsToTEnv env) (typeCheckBlock b)
+      return env
   where
-    addArgsToTEnv :: [Arg] -> TEnv -> TEnv
-    addArgsToTEnv args tenv = foldr (\arg acc -> insert (argName arg) (TVar p (argType arg)) acc) tenv args
-typeCheckFnDefs [] = ask
+    addArgsToTEnv :: TEnv -> TEnv
+    addArgsToTEnv tenv = foldr (\arg acc -> insert (argName arg) (TVar p (argType arg)) acc) tenv args
 
 expectItemType :: BNFC'Position -> Type -> Item -> TC TEnv
 expectItemType p extp item =
@@ -340,92 +362,39 @@ expectItemType p extp item =
 typeCheckTopDefs :: [TopDef] -> TC TEnv
 typeCheckTopDefs tds = do
   -- FnDef is the only TopDef possible
-  env' <- addFnDefsToEnv tds
-  local (const env') (typeCheckFnDefs tds)
+  env' <- readerSeq addFnDefToEnv tds
+  local (const env') (readerSeq typeCheckFnDef tds)
 
 typeCheckBlock :: Block -> TC TEnv
 typeCheckBlock (Block p stmts) =
   local (setBlockPos p) (typeCheckStmts stmts)
 
 typeCheckStmts :: [Stmt] -> TC TEnv
-typeCheckStmts (h : t) = do
-  env <- catchError (typeCheckStmt h) (handler h)
-  local (const env) (typeCheckStmts t)
+typeCheckStmts stmts = do
+  readerSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
   where
     handler :: Stmt -> TypeError -> TC TEnv
-    handler stmt err = throwError (StmtError h err)
-typeCheckStmts [] = ask
+    handler stmt err = throwError (StmtError stmt err)
 
 typeCheckStmt :: Stmt -> TC TEnv
 typeCheckStmt (Empty _) = ask
-typeCheckStmt (BStmt p b) = typeCheckBlock b
-typeCheckStmt (Decl p tp items) = do
-  -- TODO check if this does what i think it does
-  expectItemTypes p tp items
-  where
-    expectItemTypes p tp (h : t) = do
-      env' <- expectItemType p tp h
-      local (const env') (expectItemTypes p tp t)
-    expectItemTypes p tp [] = ask
-typeCheckStmt (Ass p id e) = do
-  tp <- typeCheckExpr e
-  env <- ask
-  case lookup id env of
-    (Just (TVar p' extp)) ->
-      if extp ~ tp
-        then ask
-        else throwError (TypeMismatch tp extp)
-    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
-    Nothing -> throwError (UndefinedVar p id)
--- FIXME really redundant. take a while to refactor this
-typeCheckStmt (Incr p id) = do
-  env <- ask
-  let extp = Int p
-  case lookup id env of
-    (Just (TVar p' tp)) ->
-      if tp ~ extp
-        then ask
-        else throwError (TypeMismatch tp extp)
-    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
-    Nothing -> throwError (UndefinedVar p id)
-typeCheckStmt (Decr p id) = do
-  env <- ask
-  let extp = Int p
-  case lookup id env of
-    (Just (TVar p' tp)) ->
-      if tp ~ extp
-        then ask
-        else throwError (TypeMismatch tp extp)
-    (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p id p')
-    Nothing -> throwError (UndefinedVar p id)
-typeCheckStmt (Ret _ e) = do
-  env <- ask
-  let extp = nextRetType env
-  tp <- typeCheckExpr e
-  if extp ~ tp
-    then ask
-    else throwError (RetTypeMismatch tp extp)
-typeCheckStmt (VRet _) = do
-  env <- ask
-  let extp = nextRetType env
-  if extp ~ void
-    then ask
-    else throwError (RetTypeMismatch void extp)
-  where
-    void = Void BNFC'NoPosition
+typeCheckStmt (BStmt _ b) = typeCheckBlock b
+typeCheckStmt (Decl p tp items) = readerSeq (expectItemType p tp) items
+typeCheckStmt (Ass p idt e) = typeCheckExpr e >>= expectIdentType p idt
+typeCheckStmt (Incr p idt) = expectIdentType p idt (Int p)
+typeCheckStmt (Decr p idt) = expectIdentType p idt (Int p)
+typeCheckStmt (Ret _ e) = typeCheckExpr e >>= verifyNextRetType
+typeCheckStmt (VRet _) = verifyNextRetType (Void BNFC'NoPosition)
 typeCheckStmt (Cond p be s) = do
-  expectType (Bool p) be
+  _ <- expectType (Bool p) be
   typeCheckStmt s
-  ask
 typeCheckStmt (CondElse p be s1 s2) = do
-  expectType (Bool p) be
-  typeCheckStmt s1
+  _ <- expectType (Bool p) be
+  _ <- typeCheckStmt s1
   typeCheckStmt s2
-  ask
 typeCheckStmt (While p be s) = do
-  expectType (Bool p) be
+  _ <- expectType (Bool p) be
   typeCheckStmt s
-  ask
 typeCheckStmt (SExp _ e) = do
-  typeCheckExpr e
+  _ <- typeCheckExpr e
   ask

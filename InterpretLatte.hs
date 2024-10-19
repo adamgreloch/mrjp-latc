@@ -1,9 +1,10 @@
-{-# LANGUAGE ImportQualifiedPost, FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE StrictData #-}
 
 module Main where
 
 import AbsLatte
-import Helper
 import Control.Monad (foldM)
 import Control.Monad.Except
   ( ExceptT,
@@ -14,32 +15,31 @@ import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
-    Reader,
     ReaderT,
     asks,
     runReaderT,
   )
 import Control.Monad.State
-  ( MonadState (get, put),
+  ( MonadState (get),
     StateT,
+    gets,
     runStateT,
   )
 import Control.Monad.State.Lazy (modify)
-import Data.Bifunctor qualified
 import Data.Map (Map)
 import Data.Map qualified as M
 import Data.Maybe (fromJust)
 import GHC.IO.Handle.FD (stderr)
+import Helper
 import LexLatte (Token, mkPosToken)
 import ParLatte (myLexer, pProgram)
-import PrintLatte (Print, printTree)
+import PrintLatte (printTree)
 import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
 import TypeCheckLatte
 import Prelude hiding (lookup)
-import Control.Monad.State (gets)
 
 type Err = Either String
 
@@ -62,7 +62,7 @@ data RuntimeError' a
     NoReturnError
       -- | error position
       a
-      -- | function identifier
+      -- | function idtentifier
       Ident
   | -- | Thrown when error() is thrown in the program
     RuntimeError
@@ -72,7 +72,7 @@ data RuntimeError' a
     DivByZero
       -- | error position
       a
-  | -- | Thrown when no valid main() was found
+  | -- | Thrown when no validt main() was found
     MainNotFound
   | -- | Error type wrapper for statement pretty printing
     StmtError
@@ -80,7 +80,7 @@ data RuntimeError' a
       Stmt
       -- | the actual runtime error
       RuntimeError
-  | -- | Thrown when interpreter enters an invalid state, because
+  | -- | Thrown when interpreter enters an invalidt state, because
     -- typechecker gave a false positive
     TypeCheckerFalsePositive
 
@@ -102,7 +102,7 @@ lookupLoc var = do
   env <- ask
   case M.lookup var env of
     Just (Var l) -> return l
-    _ -> throwError TypeCheckerFalsePositive
+    _othr -> throwError TypeCheckerFalsePositive
 
 addToNewLoc :: Value -> IM Loc
 addToNewLoc v = do
@@ -116,14 +116,14 @@ unpackInt e = do
   v <- evalExpr e
   case v of
     IntV x -> return x
-    _ -> throwError TypeCheckerFalsePositive
+    _othr -> throwError TypeCheckerFalsePositive
 
 unpackBool :: Expr -> IM Bool
 unpackBool e = do
   v <- evalExpr e
   case v of
     BoolV b -> return b
-    _ -> throwError TypeCheckerFalsePositive
+    _othr -> throwError TypeCheckerFalsePositive
 
 mapInt :: (Integer -> Integer) -> Expr -> IM Value
 mapInt f e = do
@@ -140,7 +140,7 @@ mapStr f e = do
   v <- evalExpr e
   case v of
     StrV x -> return (StrV (f x))
-    _ -> throwError TypeCheckerFalsePositive
+    _othr -> throwError TypeCheckerFalsePositive
 
 evalExpr :: Expr -> IM Value
 evalExpr (EVar _ var) = lookupLoc var >>= lookupValue
@@ -163,18 +163,17 @@ evalExpr (EApp _ (Ident "readString") []) = do
   return (StrV input)
 evalExpr (EApp p (Ident "error") []) = do
   throwError (RuntimeError p)
-evalExpr (EApp _ id exprs) = do
+evalExpr (EApp _ idt exprs) = do
   env <- ask
-  st <- get
-  case M.lookup id env of
+  case M.lookup idt env of
     Just fn -> do
-      env'' <- foldM addArgToEnv (M.insert id fn (fnEnv fn)) (zip exprs (args fn))
+      env'' <- foldM addArgToEnv (M.insert idt fn (fnEnv fn)) (zip exprs (args fn))
       res <- local (const env'') (evalBlock (block fn))
       case (retType fn, res) of
         (Void _, _) -> return VoidV
         (_, Returned resv) -> return resv
-        (_, _) -> throwError (NoReturnError (declPos fn) id)
-    _ -> throwError TypeCheckerFalsePositive
+        (_, _) -> throwError (NoReturnError (declPos fn) idt)
+    _othr -> throwError TypeCheckerFalsePositive
   where
     addArgToEnv :: Env -> (Expr, Arg) -> IM Env
     addArgToEnv env (e, Arg _ _ argname) = do
@@ -206,6 +205,7 @@ evalExpr (EAdd _ e1 (Plus _) e2) =
     case v1 of
       StrV s1 -> mapStr (s1 ++) e2
       IntV n1 -> mapInt (n1 +) e2
+      _othr -> throwError TypeCheckerFalsePositive
 evalExpr (EAdd _ e1 (Minus _) e2) =
   do
     n1 <- unpackInt e1
@@ -249,8 +249,8 @@ evalStmts (h : t) = do
     v -> return v
   where
     handler :: Stmt -> RuntimeError -> IM Result
-    handler stmt err = throwError (StmtError h err)
-evalStmts [] = do asks Cont;
+    handler stmt err = throwError (StmtError stmt err)
+evalStmts [] = do asks Cont
 
 evalFnDef :: TopDef -> IM Env
 evalFnDef (FnDef p ret fn args bl) = do
@@ -267,26 +267,27 @@ returnValue val = return (Returned val)
 
 evalItem :: Type -> Item -> IM Env
 evalItem tp item = do
-  (id, v) <- getIdValue tp item
+  (idt, v) <- idValue
   l <- addToNewLoc v
-  asks (M.insert id (Var l))
+  asks (M.insert idt (Var l))
   where
-    getIdValue :: Type -> Item -> IM (Ident, Value)
-    getIdValue tp item =
+    idValue :: IM (Ident, Value)
+    idValue =
       case item of
-        NoInit _ id -> return (id, defaultValue)
-        Init _ id e -> do
+        NoInit _ idt -> return (idt, defaultValue)
+        Init _ idt e -> do
           v <- evalExpr e
-          return (id, v)
+          return (idt, v)
     defaultValue = case tp of
       Int _ -> IntV 0
       Str _ -> StrV ""
       Bool _ -> BoolV False
+      _othr -> error "Should never happen"
 
 evalStmt :: Stmt -> IM Result
 evalStmt (Ret _ e) = evalExpr e >>= returnValue
 evalStmt (VRet _) =
-  -- returning Void is a bit artificial, but helps with error catching
+  -- returning Voidt is a bit artificial, but helps with error catching
   returnValue VoidV
 evalStmt (Cond _ e st) = do
   BoolV b <- evalExpr e
@@ -298,7 +299,7 @@ evalStmt (While p e st) = do
   BoolV b <- evalExpr e
   if b
     then do
-      evalStmt st
+      _ <- evalStmt st
       evalStmt (While p e st)
     else ask >>= passEnv
 evalStmt stmt = evalStmt' stmt >>= passEnv
@@ -315,6 +316,7 @@ evalStmt stmt = evalStmt' stmt >>= passEnv
       modify (M.insert l v)
       ask
     evalStmt' (SExp _ e) = evalExpr e >> ask
+    evalStmt' _ = error "todo"
 
 evalTopDefs :: [TopDef] -> IM Env
 evalTopDefs (h : t) = do
@@ -326,8 +328,8 @@ evalProgram :: Program -> IM ()
 evalProgram (Program _ tds) = do
   env <- evalTopDefs tds
   case M.lookup (Ident "main") env of
-    (Just (Fn _ _ env' args block)) -> do
-      local (const env') (evalBlock block)
+    (Just (Fn _ _ env' _ block)) -> do
+      _ <- local (const env') (evalBlock block)
       return ()
     _otherwise -> throwError MainNotFound
 
@@ -348,7 +350,7 @@ run :: Verbosity -> ParseFun Program -> String -> IO ()
 run v p s =
   case p ts of
     Left err -> do
-      hPutStrLn stderr ("Parse failed: " ++ err)
+      hPutStrLn stderr ("ERROR\n" ++ err)
       putStrV v "\n Tokens:"
       mapM_ (putStrV v . showPosToken . mkPosToken) ts
       exitFailure
@@ -364,7 +366,8 @@ showTree v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
-  -- interpret v tree
+
+-- interpret v tree
 
 usage :: IO ()
 usage = do

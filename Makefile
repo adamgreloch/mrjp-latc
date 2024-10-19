@@ -7,6 +7,7 @@ HAPPY      = happy
 HAPPY_OPTS = --array --info --ghc --coerce
 ALEX       = alex
 ALEX_OPTS  = --ghc
+GHC_OPTS 	 = -Wall
 
 # List of goals not corresponding to file names.
 
@@ -27,7 +28,7 @@ AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs InterpretLatte.hs : Latte.cf
 %.hs : %.x
 	${ALEX} ${ALEX_OPTS} $<
 
-InterpretLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs InterpretLatte.hs
+InterpretLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs InterpretLatte.hs
 	${GHC} ${GHC_OPTS} $@
 
 # Rules for cleaning generated files.
