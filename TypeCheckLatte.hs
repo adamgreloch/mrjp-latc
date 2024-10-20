@@ -17,6 +17,7 @@ import Control.Monad.Reader
     asks,
     runReader,
   )
+import Data.Either (isLeft)
 import Data.List (nubBy)
 import Data.Map (Map)
 import Data.Map qualified as M
@@ -29,7 +30,13 @@ import Prelude hiding (lookup)
 type TypeError = TypeError' BNFC'Position
 
 data TypeError' a
-  = -- | Undefined variable error
+  = -- | Thrown when block ended without an explicit return from function when expected
+    NoReturnError
+      -- | error position
+      a
+      -- | function identifier
+      Ident
+  | -- | Undefined variable error
     UndefinedVar
       -- | error position
       a
@@ -145,11 +152,22 @@ instance HasPosition (VPType' BNFC'Position) where
     TVar p _ -> p
     TFn p _ _ -> p
 
-type TEnv = (Type, BNFC'Position, Map Ident VPType)
+type TEnv = (Ident, Type, BNFC'Position, Map Ident VPType)
+
+type Ret = Either TEnv Type
+
+data Value = IntV Integer | StrV String | BoolV Bool | VoidV deriving (Show)
+
+type ConstOrVarType = ExprType' BNFC'Position
+
+-- | If an expression consists of constants or can be short circuited
+-- to one, the ExprType will be a Const. Otherwise, it is a Var
+data ExprType' a = Const a Value | Var (Type' a)
 
 initTEnv :: TEnv
 initTEnv =
-  ( Void nop,
+  ( Ident "main",
+    Void nop,
     BNFC'NoPosition,
     foldr
       addPredefinedFun
@@ -167,22 +185,25 @@ initTEnv =
     nop = BNFC'NoPosition
 
 lookup :: Ident -> TEnv -> Maybe VPType
-lookup idt (_, _, mp) = M.lookup idt mp
+lookup idt (_, _, _, mp) = M.lookup idt mp
 
 insert :: Ident -> VPType -> TEnv -> TEnv
-insert idt vpt (ret, bp, mp) = (ret, bp, M.insert idt vpt mp)
+insert idt vpt (fnidt, ret, bp, mp) = (fnidt, ret, bp, M.insert idt vpt mp)
 
 setRetType :: Type -> TEnv -> TEnv
-setRetType ret (_, bp, mp) = (ret, bp, mp)
+setRetType ret (fnidt, _, bp, mp) = (fnidt, ret, bp, mp)
 
 setBlockPos :: BNFC'Position -> TEnv -> TEnv
-setBlockPos bp (ret, _, mp) = (ret, bp, mp)
+setBlockPos bp (fnidt, ret, _, mp) = (fnidt, ret, bp, mp)
 
 blockPos :: TEnv -> BNFC'Position
-blockPos (_, bp, _) = bp
+blockPos (_, _, bp, _) = bp
 
 nextRetType :: TEnv -> Type
-nextRetType (ret, _, _) = ret
+nextRetType (_, ret, _, _) = ret
+
+-- These two monadreader functions are helpful, but can probably be generized in
+-- a smarter way (possibly merged). It really depends
 
 readerSeq :: (MonadReader r m) => (a -> m r) -> [a] -> m r
 readerSeq mf (h : t) = do
@@ -190,7 +211,16 @@ readerSeq mf (h : t) = do
   local (const env) (readerSeq mf t)
 readerSeq _ [] = ask
 
+readerEitherSeq :: (MonadReader r m) => (a -> m (Either r l)) -> [a] -> m (Either r l)
+readerEitherSeq mf (h : t) = do
+  res <- mf h
+  case res of
+    (Left l) -> local (const l) (readerEitherSeq mf t)
+    (Right r) -> return (Right r)
+readerEitherSeq _ [] = asks Left
+
 instance Show TypeError where
+  show (NoReturnError p fn) = "no return from function " ++ show fn ++ " found while expected from its signature at " ++ at p
   show (UndefinedVar p var) = "undefined variable " ++ show var ++ " at " ++ at p
   show (UndefinedFn p fn) = "undefined function " ++ show fn ++ " at " ++ at p
   show (NameNotUniqueInBlock p idt p') = "redefinition of name " ++ show idt ++ " at " ++ at p ++ " that was already declared in that block at " ++ at p'
@@ -207,16 +237,23 @@ instance Show TypeError where
   show (UnexpectedBoolType p) = "unexpected boolean at " ++ at p
   show UnexpectedError = "Unexpected typechecker error. This should not happen..."
 
-typeCheckExpr :: Expr -> TC Type
+getType :: ConstOrVarType -> Type
+getType (Var tp) = tp
+getType (Const p (IntV _)) = Int p
+getType (Const p (BoolV _)) = Bool p
+getType (Const p (StrV _)) = Str p
+getType (Const p VoidV) = Void p
+
+typeCheckExpr :: Expr -> TC ConstOrVarType
 typeCheckExpr (EVar p var) = do
   env <- ask
   case lookup var env of
-    (Just (TVar _ tp)) -> return tp
+    (Just (TVar _ tp)) -> return (Var tp)
     (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p var p')
     Nothing -> throwError (UndefinedVar p var)
-typeCheckExpr (ELitInt p _) = return (Int p)
-typeCheckExpr (ELitTrue p) = return (Bool p)
-typeCheckExpr (ELitFalse p) = return (Bool p)
+typeCheckExpr (ELitInt p int) = return (Const p (IntV int))
+typeCheckExpr (ELitTrue p) = return (Const p (BoolV True))
+typeCheckExpr (ELitFalse p) = return (Const p (BoolV False))
 typeCheckExpr (EApp p fn exprs) = do
   env <- ask
   case lookup fn env of
@@ -226,50 +263,90 @@ typeCheckExpr (EApp p fn exprs) = do
       if length exprs == length args
         then do
           mapM_ typeCheckArgs (zip exprs args)
-          return ret
+          return (Var ret)
         else throwError (SigArgCountMismatch p fn (length args) p' (length exprs))
   where
     typeCheckArgs :: (Expr, Arg) -> TC ()
     typeCheckArgs (e, arg) = do
-      tp <- typeCheckExpr e
+      ctp <- typeCheckExpr e
       let extp = argType arg
+      let tp = getType ctp
       if extp ~ tp
         then return ()
         else throwError (SigTypeMismatch p fn tp extp)
-typeCheckExpr (EString p _) = return (Str p)
+typeCheckExpr (EString p _) = return (Var (Str p))
 typeCheckExpr (Neg p e) = expectType (Int p) e
 typeCheckExpr (Not p e) = expectType (Bool p) e
 typeCheckExpr (EMul p e1 _ e2) = expectType2 (Int p) e1 e2
 typeCheckExpr (EAdd p e1 (Minus _) e2) = expectType2 (Int p) e1 e2
 typeCheckExpr (EAdd _ e1 (Plus _) e2) = expectSameNotBoolType e1 e2
-typeCheckExpr (ERel p e1 _ e2) = do
-  _ <- expectSameType e1 e2
-  return (Bool p)
-typeCheckExpr (EAnd p e1 e2) = expectType2 (Bool p) e1 e2
-typeCheckExpr (EOr p e1 e2) = expectType2 (Bool p) e1 e2
+typeCheckExpr (ERel p e1 op e2) = do
+  do
+    v1 <- typeCheckExpr e1
+    v2 <- typeCheckExpr e2
+    case (v1, v2) of
+      -- FIXME prooobaably could be done better
+      (Const _ (IntV n1), Const _ (IntV n2)) -> return (Const p (BoolV (f n1 n2)))
+      (Const _ (StrV s1), Const _ (StrV s2)) -> return (Const p (BoolV (f s1 s2)))
+      (Const _ (BoolV b1), Const _ (BoolV b2)) -> return (Const p (BoolV (f b1 b2)))
+      (_, _) -> do
+        let (tp1, tp2) = (getType v1, getType v2)
+        if tp1 ~ tp2
+          then return (Var (Bool p))
+          else throwError (TypeMismatch tp1 tp2)
+  where
+    f :: (Ord a) => a -> a -> Bool
+    f = case op of
+      LTH _ -> (<)
+      LE _ -> (<=)
+      GTH _ -> (>)
+      GE _ -> (>=)
+      EQU _ -> (==)
+      NE _ -> (/=)
+typeCheckExpr (EAnd p e1 e2) = shortCircuit False p e1 e2
+typeCheckExpr (EOr p e1 e2) = shortCircuit True p e1 e2
 
-expectSameNotBoolType :: Expr -> Expr -> TC Type
+-- | Short circuit if at least one expr is const b
+shortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> TC ConstOrVarType
+shortCircuit b p e1 e2 = do
+  ctp1 <- typeCheckExpr e1
+  ctp2 <- typeCheckExpr e2
+  _ <- assertSameTypes p ctp1 ctp2
+  case (ctp1, ctp2) of
+    (Const _ (BoolV v), _) | v == b -> return (Const p (BoolV b))
+    (_, Const _ (BoolV v)) | v == b -> return (Const p (BoolV b))
+    (_, _) -> return (Var (Bool p))
+
+expectSameNotBoolType :: Expr -> Expr -> TC ConstOrVarType
 expectSameNotBoolType e1 e2 = do
   t <- expectSameType e1 e2
-  case t of
+  case getType t of
     (Bool p) -> throwError (UnexpectedBoolType p)
     _otherwise -> return t
 
-expectSameType :: Expr -> Expr -> TC Type
+assertSameTypes :: BNFC'Position -> ConstOrVarType -> ConstOrVarType -> TC ConstOrVarType
+assertSameTypes p ctp1 ctp2 = do
+  let (tp1, tp2) = (getType ctp1, getType ctp2)
+  if tp1 ~ tp2
+    then return (Var (Bool p))
+    else throwError (TypeMismatch tp1 tp2)
+
+expectSameType :: Expr -> Expr -> TC ConstOrVarType
 expectSameType e1 e2 = do
   tp1 <- typeCheckExpr e1
-  expectType tp1 e2
+  expectType (getType tp1) e2
 
-expectType2 :: Type -> Expr -> Expr -> TC Type
+expectType2 :: Type -> Expr -> Expr -> TC ConstOrVarType
 expectType2 extp e1 e2 = do
   _ <- expectType extp e1
   expectType extp e2
 
-expectType :: Type -> Expr -> TC Type
+expectType :: Type -> Expr -> TC ConstOrVarType
 expectType extp e = do
-  tp <- typeCheckExpr e
+  ctp <- typeCheckExpr e
+  let tp = getType ctp
   if extp ~ tp
-    then return tp
+    then return ctp
     else throwError (TypeMismatch tp extp)
 
 expectUniqueIdent :: BNFC'Position -> Ident -> TC ()
@@ -283,23 +360,23 @@ expectUniqueIdent p idt = do
             then return ()
             else throwError (NameNotUniqueInBlock p idt p')
 
-expectIdentType :: BNFC'Position -> Ident -> Type -> TC TEnv
+expectIdentType :: BNFC'Position -> Ident -> Type -> TC Ret
 expectIdentType p idt extp = do
   env <- ask
   case lookup idt env of
     (Just (TVar _ tp)) ->
       if extp ~ tp
-        then ask
+        then asks Left
         else throwError (TypeMismatch tp extp)
     (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p idt p')
     Nothing -> throwError (UndefinedVar p idt)
 
-verifyNextRetType :: Type -> TC TEnv
+verifyNextRetType :: Type -> TC Ret
 verifyNextRetType tp = do
   env <- ask
   let extp = nextRetType env
   if extp ~ tp
-    then ask
+    then return (Right tp)
     else throwError (RetTypeMismatch tp extp)
 
 typeCheckProgram :: Int -> Program -> IO ()
@@ -334,14 +411,16 @@ addFnDefToEnv (FnDef p ret fn args b) = do
       asks (insert fn (TFn p ret args))
 
 typeCheckFnDef :: TopDef -> TC TEnv
-typeCheckFnDef (FnDef p ret fn args b) = do
-  checkIfMain (FnDef p ret fn args b)
+typeCheckFnDef (FnDef p expret fn args b) = do
+  checkIfMain (FnDef p expret fn args b)
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
-      env <- ask -- Assumes that FnDef is already in the env
-      _ <- local (const $ setRetType ret $ addArgsToTEnv env) (typeCheckBlock b)
-      return env
+      env <- ask -- Assumes FnDef is already in the env
+      ret <- local (const $ setRetType expret $ addArgsToTEnv env) (typeCheckBlock b)
+      if isLeft ret && not (expret ~ Void BNFC'NoPosition)
+        then throwError (NoReturnError p fn)
+        else return env -- Assumes typeCheckBlock already checked all the return types
   where
     addArgsToTEnv :: TEnv -> TEnv
     addArgsToTEnv tenv = foldr (\arg acc -> insert (argName arg) (TVar p (argType arg)) acc) tenv args
@@ -354,47 +433,62 @@ expectItemType p extp item =
       asks (insert var (TVar p extp))
     (Init _ var e) -> do
       expectUniqueIdent p var
-      tp <- typeCheckExpr e
+      ctp <- typeCheckExpr e
+      let tp = getType ctp
       if extp ~ tp
         then asks (insert var (TVar p tp))
         else throwError (TypeMismatch tp extp)
 
 typeCheckTopDefs :: [TopDef] -> TC TEnv
 typeCheckTopDefs tds = do
+  -- TODO add function signature printing
   -- FnDef is the only TopDef possible
   env' <- readerSeq addFnDefToEnv tds
   local (const env') (readerSeq typeCheckFnDef tds)
 
-typeCheckBlock :: Block -> TC TEnv
+typeCheckBlock :: Block -> TC Ret
 typeCheckBlock (Block p stmts) =
   local (setBlockPos p) (typeCheckStmts stmts)
 
-typeCheckStmts :: [Stmt] -> TC TEnv
+typeCheckStmts :: [Stmt] -> TC Ret
 typeCheckStmts stmts = do
-  readerSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
+  readerEitherSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
   where
-    handler :: Stmt -> TypeError -> TC TEnv
+    handler :: Stmt -> TypeError -> TC Ret
     handler stmt err = throwError (StmtError stmt err)
 
-typeCheckStmt :: Stmt -> TC TEnv
-typeCheckStmt (Empty _) = ask
+typeCheckStmt :: Stmt -> TC Ret
+typeCheckStmt (Empty _) = asks Left
 typeCheckStmt (BStmt _ b) = typeCheckBlock b
-typeCheckStmt (Decl p tp items) = readerSeq (expectItemType p tp) items
-typeCheckStmt (Ass p idt e) = typeCheckExpr e >>= expectIdentType p idt
+typeCheckStmt (Decl p tp items) = Left <$> readerSeq (expectItemType p tp) items
+typeCheckStmt (Ass p idt e) = typeCheckExpr e >>= expectIdentType p idt . getType
 typeCheckStmt (Incr p idt) = expectIdentType p idt (Int p)
 typeCheckStmt (Decr p idt) = expectIdentType p idt (Int p)
-typeCheckStmt (Ret _ e) = typeCheckExpr e >>= verifyNextRetType
+typeCheckStmt (Ret _ e) = typeCheckExpr e >>= verifyNextRetType . getType
 typeCheckStmt (VRet _) = verifyNextRetType (Void BNFC'NoPosition)
 typeCheckStmt (Cond p be s) = do
-  _ <- expectType (Bool p) be
-  typeCheckStmt s
+  ctp <- expectType (Bool p) be
+  ret <- typeCheckStmt s
+  case ctp of
+    (Const _ (BoolV True)) -> return ret
+    _else -> asks Left
 typeCheckStmt (CondElse p be s1 s2) = do
-  _ <- expectType (Bool p) be
-  _ <- typeCheckStmt s1
-  typeCheckStmt s2
+  ctp <- expectType (Bool p) be
+  ret1 <- typeCheckStmt s1
+  ret2 <- typeCheckStmt s2
+  case ctp of
+    (Const _ (BoolV val)) ->
+      if val
+        then return ret1
+        else return ret2
+    _else ->
+      ( case (ret1, ret2) of
+          (Right a, Right b) | a ~ b -> return ret1
+          _else -> asks Left
+      )
 typeCheckStmt (While p be s) = do
   _ <- expectType (Bool p) be
   typeCheckStmt s
 typeCheckStmt (SExp _ e) = do
   _ <- typeCheckExpr e
-  ask
+  asks Left

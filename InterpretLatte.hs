@@ -62,7 +62,7 @@ data RuntimeError' a
     NoReturnError
       -- | error position
       a
-      -- | function idtentifier
+      -- | function identifier
       Ident
   | -- | Thrown when error() is thrown in the program
     RuntimeError
@@ -72,7 +72,7 @@ data RuntimeError' a
     DivByZero
       -- | error position
       a
-  | -- | Thrown when no validt main() was found
+  | -- | Thrown when no valid main() was found
     MainNotFound
   | -- | Error type wrapper for statement pretty printing
     StmtError
@@ -80,7 +80,7 @@ data RuntimeError' a
       Stmt
       -- | the actual runtime error
       RuntimeError
-  | -- | Thrown when interpreter enters an invalidt state, because
+  | -- | Thrown when interpreter enters an invalid state, because
     -- typechecker gave a false positive
     TypeCheckerFalsePositive
 
