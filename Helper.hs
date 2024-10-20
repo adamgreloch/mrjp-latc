@@ -53,10 +53,26 @@ printLineNr :: BNFC'Position -> String
 printLineNr Nothing = "?"
 printLineNr (Just (line, _)) = show line
 
+printIdent :: Ident -> String
+printIdent (Ident idt) = idt
+
+printType :: Type -> String
+printType (Int _) = "int"
+printType (Str _) = "string"
+printType (Bool _) = "boolean"
+printType (Void _) = "void"
+printType (Fun _ rt ts) = show rt ++ "(" ++ foldr (\t acc -> show t ++ ", " ++ acc) "" ts
+
 printStmt :: Stmt -> String
 printStmt stmt =
-  "  " ++ unpack (replace (pack "\n") (pack "\n  ") pstr)
+  printLineNr (hasPosition stmt) ++ " | " ++ unpack (replace (pack "\n") (pack "\n  | ") pstr)
   where
     pstr = pack (printTree stmt)
 
+printArg :: Arg -> String
+printArg (Arg _ tp idt) = printType tp ++ " " ++ printIdent idt
+
+printTopDef :: TopDef -> String
+printTopDef (FnDef p ret fn args _) =
+  printLineNr p ++ " | " ++ show ret ++ " " ++ show fn ++ "(" ++ foldr (\t acc -> printArg t ++ (if null acc then "" else ", " ++ acc)) "" args ++ ")"
 

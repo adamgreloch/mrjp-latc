@@ -138,6 +138,12 @@ data TypeError' a
       Stmt
       -- | the actual type error
       TypeError
+  | -- | Error type wrapper for TopDef (FnDef) pretty printing
+    TopDefError
+      -- | TopDef in which type error error was thrown
+      TopDef
+      -- | the actual type error
+      TypeError
   | -- | Something really bad happened. Fix your code
     UnexpectedError
 
@@ -234,6 +240,7 @@ instance Show TypeError where
   show (SigTypeMismatch _ fn tp extp) = "signature type mismatch for function " ++ show fn ++ ". Got " ++ typeAt tp ++ ", but expected " ++ typeFrom extp
   show (SigArgCountMismatch p fn n p' exn) = "passed " ++ show n ++ " argument(s) to function " ++ show fn ++ " at " ++ at p ++ ", but expected " ++ show exn ++ " as declared at " ++ at p'
   show (StmtError stmt err) = "in statement:\n" ++ printStmt stmt ++ "\n" ++ show err
+  show (TopDefError td err) = "in function:\n" ++ printTopDef td ++ "\n" ++ show err
   show (UnexpectedBoolType p) = "unexpected boolean at " ++ at p
   show UnexpectedError = "Unexpected typechecker error. This should not happen..."
 
@@ -444,7 +451,9 @@ typeCheckTopDefs tds = do
   -- TODO add function signature printing
   -- FnDef is the only TopDef possible
   env' <- readerSeq addFnDefToEnv tds
-  local (const env') (readerSeq typeCheckFnDef tds)
+  local (const env') (readerSeq (\a -> catchError (typeCheckFnDef a) (handler a)) tds)
+  where
+    handler td err = throwError (TopDefError td err)
 
 typeCheckBlock :: Block -> TC Ret
 typeCheckBlock (Block p stmts) =
@@ -454,7 +463,6 @@ typeCheckStmts :: [Stmt] -> TC Ret
 typeCheckStmts stmts = do
   readerEitherSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
   where
-    handler :: Stmt -> TypeError -> TC Ret
     handler stmt err = throwError (StmtError stmt err)
 
 typeCheckStmt :: Stmt -> TC Ret
