@@ -13,4 +13,5 @@ Lex*
 ErrM*
 TestLatte*
 InterpretLatte
+CompileLatte
 !*.hs

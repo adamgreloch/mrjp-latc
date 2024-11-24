@@ -61,8 +61,8 @@ data Type' a
 
 instance C.Show (Type' a) where
   show (Int _) = "int"
-  show (Str _) = "string"
-  show (Bool _) = "boolean"
+  show (Str _) = "str"
+  show (Bool _) = "bool"
   show (Void _) = "void"
   show (Fun _ rt ts) = C.show rt C.++ "(" C.++ C.foldr (\t acc -> C.show t C.++ ", " C.++ acc) "" ts
 

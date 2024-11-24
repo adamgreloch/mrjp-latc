@@ -15,11 +15,11 @@ GHC_OPTS 	 = -Wall
 
 # Default goal.
 
-all : InterpretLatte
+all : CompileLatte
 
 # Rules for building the parser.
 
-AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs InterpretLatte.hs : Latte.cf
+AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs TransformAbsToFIR.hs : Latte.cf
 	bnfc --haskell --functor Latte.cf
 
 %.hs : %.y
@@ -28,7 +28,7 @@ AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs InterpretLatte.hs : Latte.cf
 %.hs : %.x
 	${ALEX} ${ALEX_OPTS} $<
 
-InterpretLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs InterpretLatte.hs
+CompileLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs Common.hs TransformAbsToFIR.hs CompileLatte.hs
 	${GHC} ${GHC_OPTS} $@
 
 # Rules for cleaning generated files.

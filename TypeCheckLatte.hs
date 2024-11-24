@@ -26,6 +26,7 @@ import Helper
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
 import Prelude hiding (lookup)
+import Common
 
 type TypeError = TypeError' BNFC'Position
 
@@ -158,6 +159,7 @@ instance HasPosition (VPType' BNFC'Position) where
     TVar p _ -> p
     TFn p _ _ -> p
 
+-- TODO make this tuple a datatype
 type TEnv = (Ident, Type, BNFC'Position, Map Ident VPType)
 
 type Ret = Either TEnv Type
@@ -208,23 +210,6 @@ blockPos (_, _, bp, _) = bp
 nextRetType :: TEnv -> Type
 nextRetType (_, ret, _, _) = ret
 
--- These two monadreader functions are helpful, but can probably be generized in
--- a smarter way (possibly merged). It really depends
-
-readerSeq :: (MonadReader r m) => (a -> m r) -> [a] -> m r
-readerSeq mf (h : t) = do
-  env <- mf h
-  local (const env) (readerSeq mf t)
-readerSeq _ [] = ask
-
-readerEitherSeq :: (MonadReader r m) => (a -> m (Either r l)) -> [a] -> m (Either r l)
-readerEitherSeq mf (h : t) = do
-  res <- mf h
-  case res of
-    (Left l) -> local (const l) (readerEitherSeq mf t)
-    (Right r) -> return (Right r)
-readerEitherSeq _ [] = asks Left
-
 instance Show TypeError where
   show (NoReturnError p fn) = "no return from function " ++ show fn ++ " found while expected from its signature at " ++ at p
   show (UndefinedVar p var) = "undefined variable " ++ show var ++ " at " ++ at p
@@ -271,7 +256,7 @@ typeCheckExpr (EApp p fn exprs) = do
         then do
           mapM_ typeCheckArgs (zip exprs args)
           return (Var ret)
-        else throwError (SigArgCountMismatch p fn (length args) p' (length exprs))
+        else throwError (SigArgCountMismatch p fn (length exprs) p' (length args))
   where
     typeCheckArgs :: (Expr, Arg) -> TC ()
     typeCheckArgs (e, arg) = do
@@ -284,8 +269,14 @@ typeCheckExpr (EApp p fn exprs) = do
 typeCheckExpr (EString p _) = return (Var (Str p))
 typeCheckExpr (Neg p e) = expectType (Int p) e
 typeCheckExpr (Not p e) = expectType (Bool p) e
-typeCheckExpr (EMul p e1 _ e2) = expectType2 (Int p) e1 e2
-typeCheckExpr (EAdd p e1 (Minus _) e2) = expectType2 (Int p) e1 e2
+typeCheckExpr (EMul _ e1 op e2) =
+  case op of
+    (Times _) -> expectIntBinOp e1 (*) e2
+    (Div _) -> expectIntBinOp e1 div e2
+    (Mod _) -> expectIntBinOp e1 mod e2
+typeCheckExpr (EAdd _ e1 (Minus _) e2) = expectIntBinOp e1 (-) e2
+-- TODO compile-time const addition evaluation
+-- strings get in a way a bit for now (implementation detail)
 typeCheckExpr (EAdd _ e1 (Plus _) e2) = expectSameNotBoolType e1 e2
 typeCheckExpr (ERel p e1 op e2) = do
   do
@@ -343,10 +334,20 @@ expectSameType e1 e2 = do
   tp1 <- typeCheckExpr e1
   expectType (getType tp1) e2
 
-expectType2 :: Type -> Expr -> Expr -> TC ConstOrVarType
-expectType2 extp e1 e2 = do
-  _ <- expectType extp e1
-  expectType extp e2
+-- expectType2 :: Type -> Expr -> Expr -> TC ConstOrVarType
+-- expectType2 extp e1 e2 = do
+--   _ <- expectType extp e1
+--   expectType extp e2
+
+expectIntBinOp :: Expr -> (Integer -> Integer -> Integer) -> Expr -> TC ConstOrVarType
+expectIntBinOp e1 op e2 = do
+  ctp1 <- expectType int e1
+  ctp2 <- expectType int e2
+  case (ctp1, ctp2) of
+    (Const p (IntV v1), Const _ (IntV v2)) -> return (Const p (IntV (op v1 v2)))
+    (_, _) -> return ctp2
+  where
+    int = Int BNFC'NoPosition
 
 expectType :: Type -> Expr -> TC ConstOrVarType
 expectType extp e = do
@@ -410,16 +411,16 @@ checkIfMain (FnDef p ret fn args _)
   | otherwise = return ()
 
 addFnDefToEnv :: TopDef -> TC TEnv
-addFnDefToEnv (FnDef p ret fn args b) = do
-  checkIfMain (FnDef p ret fn args b)
+addFnDefToEnv fnd@(FnDef p ret fn args _) = do
+  checkIfMain fnd
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
       asks (insert fn (TFn p ret args))
 
 typeCheckFnDef :: TopDef -> TC TEnv
-typeCheckFnDef (FnDef p expret fn args b) = do
-  checkIfMain (FnDef p expret fn args b)
+typeCheckFnDef fnd@(FnDef p expret fn args b) = do
+  checkIfMain fnd
   if not $ unique args
     then throwError (ArgNameNotUniqueInFnDecl p fn)
     else do
@@ -448,7 +449,6 @@ expectItemType p extp item =
 
 typeCheckTopDefs :: [TopDef] -> TC TEnv
 typeCheckTopDefs tds = do
-  -- TODO add function signature printing
   -- FnDef is the only TopDef possible
   env' <- readerSeq addFnDefToEnv tds
   local (const env') (readerSeq (\a -> catchError (typeCheckFnDef a) (handler a)) tds)
