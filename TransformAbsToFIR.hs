@@ -21,6 +21,7 @@ import Control.Monad.State
   ( MonadState (get, put),
     StateT,
     gets,
+    modify,
     runStateT,
   )
 import Data.Map (Map)
@@ -49,9 +50,9 @@ freshTemp = do
   return fresh
 
 getLoc :: Ident -> GenM Loc
-getLoc id = do
+getLoc idt = do
   env <- ask
-  case M.lookup id env of
+  case M.lookup idt env of
     Just sloc -> do
       st <- get
       maybe onErr return (M.lookup sloc (locs st))
@@ -60,9 +61,24 @@ getLoc id = do
     onErr :: GenM Loc
     onErr = throwError (UncaughtFrontendErr "No such location")
 
+maybeGetLoc :: Ident -> GenM (Maybe Loc)
+maybeGetLoc idt = do
+  env <- ask
+  case M.lookup idt env of
+    Just sloc -> do
+      st <- get
+      maybe onErr (return . Just) (M.lookup sloc (locs st))
+    Nothing -> return Nothing
+  where
+    onErr :: GenM (Maybe Loc)
+    onErr = throwError (UncaughtFrontendErr "No such location")
+
 genExp :: Expr -> GenM Loc
 genExp (ELitInt _ n) = return (LImmInt (fromIntegral n))
 -- rough example
+
+-- TODO we will probably want to store the expression depth
+-- and emit based on temp usage (to maintain log(n))
 genExp (EAdd _ e1 (Plus _) e2) = do
   loc1 <- genExp e1
   loc2 <- genExp e2
@@ -71,13 +87,45 @@ genExp (EAdd _ e1 (Plus _) e2) = do
   return (LAddr (typeOfLoc loc1) tmp)
 genExp (EVar _ id) = getLoc id
 
-genStmt :: Stmt -> GenM ()
+genStmt :: Stmt -> GenM Env
+genStmt (Decl _ tp items) = do
+  readerSeq declareItem items
+  where
+    declareItem :: Item -> GenM Env
+    declareItem (NoInit _ idt) = do
+      env <- ask
+      sloc <- newSLoc
+      modify (\st -> st {locs = M.insert sloc (LImmInt 0) (locs st)})
+      return $ M.insert idt sloc env
+    declareItem (Init _ idt e) = do
+      loc <- genExp e
+      -- TODO assert expr type of loc is the same as vtp
+      env <- ask
+      sloc <- newSLoc
+      modify (\st -> st {locs = M.insert sloc loc (locs st)})
+      return $ M.insert idt sloc env
+genStmt (Ass _ idt e) = do
+  loc <- genExp e
+  idloc <- getLoc idt
+  case idloc of
+    (LAddr _ addr) -> emit $ Store loc addr
+    _otherwise -> throwError (UncaughtFrontendErr "Assigning to non-addr")
+  ask
 genStmt (SExp _ e) = do
   _ <- genExp e
-  return ()
+  ask
+genStmt (VRet _) = do
+  emit RetVoid
+  ask
+genStmt (AbsLatte.Ret _ e) = do
+  loc <- genExp e
+  emit $ FIR.Ret loc
+  ask
 
 genBlock :: Block -> GenM Code
-genBlock b = return []
+genBlock (Block _ stmts) = do
+  _ <- readerSeq genStmt stmts
+  takeCode
 
 genTopDefFIR :: TopDef -> GenM TopDefFIR
 genTopDefFIR (FnDef _ _ (Ident s) args block) = do

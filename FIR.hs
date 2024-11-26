@@ -4,7 +4,7 @@ module FIR where
 
 import AbsLatte
 import Control.Monad.State
-  ( MonadState,
+  ( MonadState (get, put),
     modify,
   )
 import Data.Map (Map)
@@ -86,8 +86,11 @@ data Op2
 
 data Op
   = BinOp Addr Op2 Loc Loc
-  | Load Addr Loc
-  | Store Addr Loc
+  | Load Addr Addr
+  | Store Loc Addr
+  | RetVoid
+  | Ret Loc
+  | Alloca Addr
   deriving (Show)
 
 data Meta
@@ -99,12 +102,15 @@ instance (Emittable Meta) where
 instance (Emittable Op) where
   emit o = modify (\st -> st {code = o : code st})
 
+-- | Takes emmited code from Store and cleans Store.code
+takeCode :: (MonadState Store m) => m Code
+takeCode = do
+  st <- get
+  let res = code st
+  put (st {code = []})
+  return (reverse res)
+
 -- Printable needs to know type table
 -- instance (Printable Op) where
 --   printCode (BinOp a o l1 l2) = printCode a ++ " = " ++ printCode o ++ printCode l1 ++ printCode l2
 
-load :: Addr -> Loc -> Op
-load = Load
-
-store :: Addr -> Loc -> Op
-store = Store
