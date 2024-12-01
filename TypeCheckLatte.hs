@@ -5,6 +5,7 @@
 module TypeCheckLatte (typeCheckProgram) where
 
 import AbsLatte
+import Control.Monad (when)
 import Control.Monad.Except
   ( ExceptT,
     MonadError (throwError),
@@ -395,7 +396,7 @@ typeCheckProgram v (Program _ tds) = do
       hPutStrLn stderr ("ERROR\nType check error " ++ show te)
       exitFailure
     (Right tenv) -> do
-      hPutStrLn stderr "OK\n"
+      when (v /= 1) $ hPutStrLn stderr "OK\n"
       putStrV v (show tenv)
 
 unique :: [Arg] -> Bool

@@ -141,6 +141,7 @@ genStmts (AbsLatte.Ret _ e : t) = do
   emit $ FIR.Ret loc
   genStmts t
 genStmts (Cond _ e s : t) = do
+  lab0 <- currBBLabel
   loc <- genExp e
   lab1 <- freshLabel
   lab2 <- freshLabel

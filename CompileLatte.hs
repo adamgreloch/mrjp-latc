@@ -5,7 +5,7 @@
 module Main where
 
 import AbsLatte
-import Control.Monad (foldM)
+import Control.Monad (foldM, when)
 import Control.Monad.Except
   ( ExceptT,
     MonadError (throwError),
@@ -38,6 +38,7 @@ import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
+import CFG
 import TransformAbsToFIR
 import TypeCheckLatte
 import Prelude hiding (lookup)
@@ -370,7 +371,10 @@ showTree v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
-  putStrV v $ "[FIR]\n" ++ (show (transformAbsToFIR tree))
+  putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
+  let cfg = genCFG tree
+  putStrV v $ "[CFG]\n" ++ show cfg
+  when (v == 1) $ putStrLn $ toDot cfg
 
 -- interpret v tree
 
@@ -382,7 +386,8 @@ usage = do
         "  --help          Display this help message.",
         "  (no arguments)  Parse stdin verbosely.",
         "  (files)         Parse content of files verbosely.",
-        "  -s (files)      Silent mode. Parse content of files silently."
+        "  -s (files)      Silent mode. Parse content of files silently.",
+        "  -g (files)      Print CFG in DOT format."
       ]
 
 main :: IO ()
@@ -390,6 +395,7 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    [] -> getContents >>= run 2 pProgram
+    [] -> getContents >>= run 5 pProgram
     "-s" : fs -> mapM_ (runFile 0 pProgram) fs
-    fs -> mapM_ (runFile 2 pProgram) fs
+    "-g" : fs -> mapM_ (runFile 1 pProgram) fs
+    fs -> mapM_ (runFile 5 pProgram) fs
