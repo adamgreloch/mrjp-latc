@@ -23,16 +23,16 @@ import PrintLatte (printTree)
 
 type Label = Int
 
-data Node = FnEntry Ident | FnBlock Label | FnRet
+data Node = FnEntry Ident | FnBlock Label | FnRet deriving (Eq)
 
 instance Show Node where
   show (FnEntry (Ident s)) = "FnEntry_" ++ s
-  show (FnBlock l) = show l
+  show (FnBlock l) = "L" ++ show l
   show FnRet = "FnRet"
 
 data BB = BB
   { label :: Label,
-    stmts :: Maybe [Stmt],
+    stmts :: [Stmt],
     preds :: [Node],
     succs :: [Node]
   }
@@ -69,7 +69,7 @@ addBBToCFG bb = do
   put (st {cfg = M.insert (label bb) bb (cfg st)})
 
 emptyBB :: Label -> BB
-emptyBB label = BB {label, stmts = Nothing, preds = [], succs = []}
+emptyBB label = BB {label, stmts = [], preds = [], succs = []}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -87,7 +87,7 @@ getBB label = do
 putStmtsToBB :: Label -> [Stmt] -> CFGM ()
 putStmtsToBB label stmts = do
   bb <- getBB label
-  let bb' = bb {stmts = Just stmts}
+  let bb' = bb {stmts = stmts}
   modify (\st -> st {cfg = M.insert label bb' (cfg st)})
 
 -- TODO rewrite to fold
@@ -97,21 +97,48 @@ addEdgesFromTo (h : t) bb = do
   addEdgeFromTo h bb
   addEdgesFromTo t bb
 
+-- assumes bb0->bb1
+mergeBBs :: BB -> BB -> CFGM BB
+mergeBBs bb0 bb1 = do
+  return $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ delete (FnBlock (label bb0)) (preds bb1)}
+
+replaceRefToLabel :: Label -> Label -> Node -> CFGM ()
+replaceRefToLabel labFrom labTo (FnBlock lab) = do
+  bb <- getBB lab
+  let bb' = bb {preds = map repl (preds bb), succs = map repl (succs bb)}
+  st <- get
+  let cfg' = M.insert lab bb' $ cfg st
+  put (st {cfg = cfg'})
+  where
+    repl :: Node -> Node
+    repl n@(FnBlock l) = if l == labFrom then FnBlock labTo else n
+    repl n = n
+replaceRefToLabel _ _ _ = return ()
+
 addEdgeFromTo :: Label -> Label -> CFGM ()
 addEdgeFromTo lab0 lab1 = do
   bb0 <- getBB lab0
   bb1 <- getBB lab1
-  let bb0' = bb0 {succs = FnBlock lab1 : succs bb0}
-  let bb1' = bb1 {preds = FnBlock lab0 : preds bb1}
-  -- TODO add some debug assert? like:
-  -- case M.lookup (label bb0) (cfg st) of
-  --   Nothing -> error "no such bb0 in cfg"
-  st <- get
-  let cfg' =
-        M.insert lab0 bb0' $
-          M.insert lab1 bb1' $
-            cfg st
-  put (st {cfg = cfg'})
+  if null (stmts bb0) && null (succs bb0)
+    then do
+      let bb01 = bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ preds bb1}
+      mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
+      mapM_ (replaceRefToLabel lab0 lab1) (succs bb0)
+      st <- get
+      let cfg' = M.insert lab1 bb01 $ M.delete lab0 $ cfg st
+      put (st {cfg = cfg'})
+    else do
+      -- TODO add some debug assert? like:
+      -- case M.lookup (label bb0) (cfg st) of
+      --   Nothing -> error "no such bb0 in cfg"
+      let bb0' = bb0 {succs = FnBlock lab1 : succs bb0}
+      let bb1' = bb1 {preds = FnBlock lab0 : preds bb1}
+      st <- get
+      let cfg' =
+            M.insert lab0 bb0' $
+              M.insert lab1 bb1' $
+                cfg st
+      put (st {cfg = cfg'})
 
 addEntryEdgeTo :: Label -> Ident -> CFGM ()
 addEntryEdgeTo lab fnname = do
@@ -151,13 +178,7 @@ procStmts currLab (stmt : t) =
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
       -- handled by cond flow already
-
-      -- currStmts <- takeCurrStmts
-      -- putStmtsToBB currLab currStmts
-      -- lab1 <- freshLabel
-      -- addEdgeFromTo currLab lab1
       procStmts currLab (stmts ++ t)
-    -- processTail retLabs
     s@(Ret _ _) -> handleRets s
     s@(VRet _) -> handleRets s
     s@(Cond _ _ condstmt) -> do
@@ -221,6 +242,7 @@ genCFG p =
   let (_, st) = runCFGM (procProgram p)
    in cfg st
 
+-- TODO clean this monstrosity up
 toDot :: CFG -> String
 toDot cfg =
   "digraph {\n"
@@ -241,18 +263,20 @@ toDot cfg =
                     replace (pack "<") (pack "\\<") $
                       pack (printStmts s)
         )
+    showL :: Label -> String
+    showL l = "L" ++ show l
 
     bbToDot :: BB -> String
     bbToDot bb =
-      show (label bb)
+      showL (label bb)
         ++ " [shape=record,style=filled,fillcolor=lightgrey,label=\""
         ++ "{"
-        ++ show (label bb)
+        ++ showL (label bb)
         ++ "\n|"
-        ++ maybe "??" (pstr . reverse) (stmts bb)
+        ++ (pstr . reverse) (stmts bb)
         ++ "\\l\\\n}\"];\n\n"
-        ++ foldr (\s acc -> show (label bb) ++ " -> " ++ show s ++ ";\n" ++ acc) [] (succs bb)
+        ++ foldr (\s acc -> showL (label bb) ++ " -> " ++ show s ++ ";\n" ++ acc) [] (succs bb)
         ++ foldr (\p acc -> addOnlyEntry p (label bb) acc) [] (preds bb)
     addOnlyEntry :: Node -> Label -> String -> String
-    addOnlyEntry fne@(FnEntry _) lab acc = show fne ++ " -> " ++ show lab ++ ";\n"
+    addOnlyEntry fne@(FnEntry _) lab acc = show fne ++ " -> " ++ showL lab ++ ";\n"
     addOnlyEntry _ _ acc = acc
