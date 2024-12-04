@@ -90,17 +90,8 @@ putStmtsToBB label stmts = do
   let bb' = bb {stmts = stmts}
   modify (\st -> st {cfg = M.insert label bb' (cfg st)})
 
--- TODO rewrite to fold
 addEdgesFromTo :: [Label] -> Label -> CFGM ()
-addEdgesFromTo [] _ = return ()
-addEdgesFromTo (h : t) bb = do
-  addEdgeFromTo h bb
-  addEdgesFromTo t bb
-
--- assumes bb0->bb1
-mergeBBs :: BB -> BB -> CFGM BB
-mergeBBs bb0 bb1 = do
-  return $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ delete (FnBlock (label bb0)) (preds bb1)}
+addEdgesFromTo labs bb = mapM_ (`addEdgeFromTo` bb) labs
 
 replaceRefToLabel :: Label -> Label -> Node -> CFGM ()
 replaceRefToLabel labFrom labTo (FnBlock lab) = do
@@ -115,30 +106,25 @@ replaceRefToLabel labFrom labTo (FnBlock lab) = do
     repl n = n
 replaceRefToLabel _ _ _ = return ()
 
+mapLabelToBB :: Label -> BB -> CFGM ()
+mapLabelToBB lab bb = modify (\st -> st {cfg = M.insert lab bb $ cfg st})
+
+removeLabel :: Label -> CFGM ()
+removeLabel lab = modify (\st -> st {cfg = M.delete lab $ cfg st})
+
 addEdgeFromTo :: Label -> Label -> CFGM ()
 addEdgeFromTo lab0 lab1 = do
   bb0 <- getBB lab0
   bb1 <- getBB lab1
   if null (stmts bb0) && null (succs bb0)
     then do
-      let bb01 = bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ preds bb1}
       mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
       mapM_ (replaceRefToLabel lab0 lab1) (succs bb0)
-      st <- get
-      let cfg' = M.insert lab1 bb01 $ M.delete lab0 $ cfg st
-      put (st {cfg = cfg'})
+      mapLabelToBB lab1 $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ preds bb1}
+      removeLabel lab0
     else do
-      -- TODO add some debug assert? like:
-      -- case M.lookup (label bb0) (cfg st) of
-      --   Nothing -> error "no such bb0 in cfg"
-      let bb0' = bb0 {succs = FnBlock lab1 : succs bb0}
-      let bb1' = bb1 {preds = FnBlock lab0 : preds bb1}
-      st <- get
-      let cfg' =
-            M.insert lab0 bb0' $
-              M.insert lab1 bb1' $
-                cfg st
-      put (st {cfg = cfg'})
+      mapLabelToBB lab0 $ bb0 {succs = FnBlock lab1 : succs bb0}
+      mapLabelToBB lab1 $ bb1 {preds = FnBlock lab0 : preds bb1}
 
 addEntryEdgeTo :: Label -> Ident -> CFGM ()
 addEntryEdgeTo lab fnname = do
@@ -214,7 +200,6 @@ procBlock (Block _ stmts) = do
   _ <- procStmts lab stmts
   return ()
 
--- TODO add entry node-label
 procTopDef :: TopDef -> CFGM ()
 procTopDef (FnDef _ _ fnname args block) = do
   lab <- gets currLabel
