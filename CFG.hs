@@ -9,10 +9,10 @@ import Control.Monad.Reader
   )
 import Control.Monad.State
   ( MonadState (get, put),
-    State,
+    StateT,
     gets,
     modify,
-    runState,
+    runStateT,
   )
 import Data.Bifunctor qualified
 import Data.List
@@ -52,18 +52,12 @@ type CFG = M.Map Label BB
 data Store = Store
   { cfg :: CFG,
     currStmts :: [Stmt],
-    currLabel :: Label,
     lastLabel :: Label,
     defs :: M.Map Ident (M.Map Label Expr)
   }
   deriving (Show)
 
-type CFGM a = State Store a
-
-setCurrLabel :: Label -> CFGM ()
-setCurrLabel lab = do
-  st <- get
-  put (st {currLabel = lab})
+type CFGM a = StateT Store (Reader Label) a
 
 freshLabel :: CFGM Label
 freshLabel = do
@@ -163,56 +157,61 @@ addStmtToCurrBlock s = do
   st <- get
   put (st {currStmts = s : currStmts st})
 
-procStmts :: Label -> [Stmt] -> CFGM [Label]
-procStmts currLab [] = do
+endCurrBlock :: CFGM Label
+endCurrBlock = do
+  currLab <- ask
   currStmts <- takeCurrStmts
   putStmtsToBB currLab currStmts
+  return currLab
+
+procStmts :: [Stmt] -> CFGM [Label]
+procStmts [] = do
+  currLab <- endCurrBlock
   return [currLab]
-procStmts currLab (stmt : t) =
+procStmts (stmt : t) =
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
       -- handled by cond flow already
-      procStmts currLab (stmts ++ t)
+      procStmts (stmts ++ t)
     s@(Ret _ _) -> handleRets s
     s@(VRet _) -> handleRets s
     s@(Cond _ _ condstmt) -> do
       addStmtToCurrBlock s
-      currStmts <- takeCurrStmts
-      putStmtsToBB currLab currStmts
-      lab1 <- freshLabel
-      addEdgeFromTo currLab lab1 WhenTrue
-      retLabs <- procStmts lab1 [condstmt]
+      currLab <- endCurrBlock
+      newLab <- freshLabel
+      addEdgeFromTo currLab newLab WhenTrue
+      retLabs <- local (const newLab) $ procStmts [condstmt]
       if null retLabs
-        then -- there's no returning paths from the block, meaning
-        -- we will never reach `t`
+        then do
+          -- there's no returning paths from the block, meaning
+          -- we will never reach `t`
           return []
         else do
+          currLab <- ask
           lab <- freshLabel
           addEdgeFromTo currLab lab WhenFalse
           addEdgesFromTo retLabs lab WhenDone
-          procStmts lab t
+          local (const lab) $ procStmts t
     _else -> do
       addStmtToCurrBlock stmt
-      procStmts currLab t
+      procStmts t
   where
     handleRets :: Stmt -> CFGM [Label]
     handleRets s = do
       addStmtToCurrBlock s
-      currStmts <- takeCurrStmts
-      putStmtsToBB currLab currStmts
+      currLab <- endCurrBlock
       addRetEdgeFrom currLab WhenDone
       return []
 
 procBlock :: Block -> CFGM ()
 procBlock (Block _ stmts) = do
-  lab <- gets currLabel
-  _ <- procStmts lab stmts
+  _ <- procStmts stmts
   return ()
 
 procTopDef :: TopDef -> CFGM ()
 procTopDef (FnDef _ _ fnname args block) = do
-  lab <- gets currLabel
+  lab <- ask
   addEntryEdgeTo lab fnname
   procBlock block
 
@@ -220,17 +219,16 @@ procProgram :: Program -> CFGM ()
 procProgram (Program _ topdefs) = mapM_ procTopDef topdefs
 
 runCFGM :: CFGM a -> (a, Store)
-runCFGM m = runState m initStore
+runCFGM m = runReader (runStateT m initStore) initLabel
   where
     initStore =
       Store
         { cfg = M.empty,
           currStmts = [],
-          currLabel = 0,
           lastLabel = 0,
           defs = M.empty
         }
-    initBlock = 0
+    initLabel = 0
 
 genCFG :: Program -> CFG
 genCFG p =
