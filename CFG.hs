@@ -179,20 +179,13 @@ procStmts (stmt : t) =
     s@(Cond _ _ condstmt) -> do
       addStmtToCurrBlock s
       currLab <- endCurrBlock
-      newLab <- freshLabel
-      addEdgeFromTo currLab newLab WhenTrue
-      retLabs <- local (const newLab) $ procStmts [condstmt]
-      if null retLabs
-        then do
-          -- there's no returning paths from the block, meaning
-          -- we will never reach `t`
-          return []
-        else do
-          currLab <- ask
-          lab <- freshLabel
-          addEdgeFromTo currLab lab WhenFalse
-          addEdgesFromTo retLabs lab WhenDone
-          local (const lab) $ procStmts t
+      lab1 <- freshLabel
+      addEdgeFromTo currLab lab1 WhenTrue
+      retLabs <- local (const lab1) $ procStmts [condstmt]
+      lab2 <- freshLabel
+      addEdgeFromTo currLab lab2 WhenFalse
+      addEdgesFromTo retLabs lab2 WhenDone
+      local (const lab2) $ procStmts t
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
