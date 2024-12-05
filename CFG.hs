@@ -4,21 +4,16 @@ import AbsLatte
 import Control.Monad.Reader
   ( MonadReader (ask, local),
     Reader,
-    asks,
     runReader,
   )
 import Control.Monad.State
   ( MonadState (get, put),
     StateT,
-    gets,
     modify,
     runStateT,
   )
 import Data.Bifunctor qualified
-import Data.List
-import Data.Map (Map)
 import Data.Map qualified as M
-import Data.Maybe (fromJust)
 import Data.Text (pack, replace, unpack)
 import PrintLatte (printTree)
 
@@ -122,7 +117,7 @@ addEdgeFromTo lab0 lab1 w = do
   if null (stmts bb0) && null (succs bb0)
     then do
       mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
-      mapM_ (\(l, w) -> replaceRefToLabel lab0 lab1 l) (succs bb0)
+      mapM_ (\(l, _) -> replaceRefToLabel lab0 lab1 l) (succs bb0)
       mapLabelToBB lab1 $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ preds bb1}
       removeLabel lab0
     else do
@@ -203,7 +198,8 @@ procBlock (Block _ stmts) = do
   return ()
 
 procTopDef :: TopDef -> CFGM ()
-procTopDef (FnDef _ _ fnname args block) = do
+procTopDef (FnDef _ _ fnname _ block) = do
+  -- TODO process args
   lab <- ask
   addEntryEdgeTo lab fnname
   procBlock block
@@ -228,41 +224,48 @@ genCFG p =
   let (_, st) = runCFGM (procProgram p)
    in cfg st
 
--- TODO clean this monstrosity up
+printStmts :: [Stmt] -> String
+printStmts (Cond _ e _ : t) = "if (" ++ printTree e ++ ")" ++ if null t then "" else "\n" ++ printStmts t
+printStmts (stmt : t) = printTree stmt ++ if null t then "" else "\n" ++ printStmts t
+printStmts [] = ""
+
+stmtsToDot :: [Stmt] -> String
+stmtsToDot s =
+  unpack $
+    foldr
+      ( \(from, to) acc ->
+          replace (pack from) (pack to) acc
+      )
+      (pack (printStmts s))
+      replacePatterns
+  where
+    replacePatterns =
+      [ (" ", "\\ "),
+        ("{", "\\{"),
+        ("\n", "\\l\\\n|"),
+        ("}\n", "\\}"),
+        (">", "\\>"),
+        ("<", "\\<")
+      ]
+
+bbToDot :: BB -> String
+bbToDot bb =
+  bbLabStr
+    ++ " [shape=record,style=filled,fillcolor=lightgrey,label=\"{"
+    ++ bbLabStr
+    ++ "\n|"
+    ++ (stmtsToDot . reverse) (stmts bb)
+    ++ "\\l\\\n}\"];\n\n"
+    ++ foldr (\(s, w) acc -> bbLabStr ++ " -> " ++ show s ++ "[label=" ++ show w ++ "];\n" ++ acc) [] (succs bb)
+    ++ foldr (\p acc -> show p ++ " -> " ++ bbLabStr ++ ";\n" ++ acc) [] (filter isFnEntry $ preds bb)
+  where
+    bbLabStr = "L" ++ show (label bb)
+    isFnEntry :: Node -> Bool
+    isFnEntry (FnEntry _) = True
+    isFnEntry _ = False
+
 toDot :: CFG -> String
 toDot cfg =
   "digraph {\n"
     ++ foldr (\(_, bb) acc -> bbToDot bb ++ "\n" ++ acc) [] (M.toList cfg)
     ++ "}"
-  where
-    printStmts :: [Stmt] -> String
-    printStmts (Cond _ e _ : t) = "if (" ++ printTree e ++ ")" ++ if null t then "" else "\n" ++ printStmts t
-    printStmts (stmt : t) = printTree stmt ++ if null t then "" else "\n" ++ printStmts t
-    printStmts [] = ""
-    pstr s =
-      unpack
-        ( replace (pack " ") (pack "\\ ") $
-            replace (pack "{") (pack "\\{") $
-              replace (pack "\n") (pack "\\l\\\n|") $
-                replace (pack "}\n") (pack "\\}") $
-                  replace (pack ">") (pack "\\>") $
-                    replace (pack "<") (pack "\\<") $
-                      pack (printStmts s)
-        )
-    showL :: Label -> String
-    showL l = "L" ++ show l
-
-    bbToDot :: BB -> String
-    bbToDot bb =
-      showL (label bb)
-        ++ " [shape=record,style=filled,fillcolor=lightgrey,label=\""
-        ++ "{"
-        ++ showL (label bb)
-        ++ "\n|"
-        ++ (pstr . reverse) (stmts bb)
-        ++ "\\l\\\n}\"];\n\n"
-        ++ foldr (\(s,w) acc -> showL (label bb) ++ " -> " ++ show s ++ "[label=" ++ show w ++ "];\n" ++ acc) [] (succs bb)
-        ++ foldr (\p acc -> addOnlyEntry p (label bb) acc) [] (preds bb)
-    addOnlyEntry :: Node -> Label -> String -> String
-    addOnlyEntry fne@(FnEntry _) lab acc = show fne ++ " -> " ++ showL lab ++ ";\n"
-    addOnlyEntry _ _ acc = acc
