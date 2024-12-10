@@ -2,13 +2,15 @@ module CFG (genCFG, toDot) where
 
 import AbsLatte
 import Control.Monad.Reader
-  ( MonadReader (ask, local),
+  ( MonadReader (local),
     Reader,
+    asks,
     runReader,
   )
 import Control.Monad.State
   ( MonadState (get, put),
     StateT,
+    gets,
     modify,
     runStateT,
   )
@@ -27,12 +29,12 @@ instance Show When where
   show WhenLoop = "Loop"
   show WhenDone = "Done"
 
-data Node = FnEntry Ident | FnBlock Label | FnRet deriving (Eq)
+data Node = FnEntry Ident | FnBlock Label | FnRet Ident deriving (Eq)
 
 instance Show Node where
   show (FnEntry (Ident s)) = "FnEntry_" ++ s
   show (FnBlock l) = "L" ++ show l
-  show FnRet = "FnRet"
+  show (FnRet (Ident s)) = "FnRet_" ++ s
 
 data BB = BB
   { label :: Label,
@@ -45,14 +47,16 @@ data BB = BB
 type CFG = M.Map Label BB
 
 data Store = Store
-  { cfg :: CFG,
+  { cfgs :: M.Map Ident CFG,
     currStmts :: [Stmt],
     lastLabel :: Label,
     defs :: M.Map Ident (M.Map Label Expr)
   }
   deriving (Show)
 
-type CFGM a = StateT Store (Reader Label) a
+data Env = Env {currLabel :: Label, currFn :: Ident}
+
+type CFGM a = StateT Store (Reader Env) a
 
 freshLabel :: CFGM Label
 freshLabel = do
@@ -62,12 +66,13 @@ freshLabel = do
   return fresh
 
 addBBToCFG :: BB -> CFGM ()
-addBBToCFG bb = do
-  st <- get
-  put (st {cfg = M.insert (label bb) bb (cfg st)})
+addBBToCFG bb = mapLabelToBB (label bb) bb
 
 emptyBB :: Label -> BB
 emptyBB label = BB {label, stmts = [], preds = [], succs = []}
+
+withLabel :: Label -> Env -> Env
+withLabel lab env = env {currLabel = lab}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -75,18 +80,23 @@ addEmptyBB label = do
   addBBToCFG bb
   return bb
 
+getCurrFnCFG :: CFGM CFG
+getCurrFnCFG = do
+  idt <- asks currFn
+  gets (M.findWithDefault M.empty idt . cfgs)
+
 getBB :: Label -> CFGM BB
 getBB label = do
-  st <- get
-  case M.lookup label (cfg st) of
+  cfg <- getCurrFnCFG
+  case M.lookup label cfg of
     Just bb -> return bb
     Nothing -> addEmptyBB label
 
 putStmtsToBB :: Label -> [Stmt] -> CFGM ()
-putStmtsToBB label stmts = do
-  bb <- getBB label
+putStmtsToBB lab stmts = do
+  bb <- getBB lab
   let bb' = bb {stmts = stmts}
-  modify (\st -> st {cfg = M.insert label bb' (cfg st)})
+  mapLabelToBB lab bb'
 
 addEdgesFromTo :: [Label] -> Label -> When -> CFGM ()
 addEdgesFromTo labs bb w = mapM_ (\l -> addEdgeFromTo l bb w) labs
@@ -95,9 +105,7 @@ replaceRefToLabel :: Label -> Label -> Node -> CFGM ()
 replaceRefToLabel labFrom labTo (FnBlock lab) = do
   bb <- getBB lab
   let bb' = bb {preds = map repl (preds bb), succs = map (Data.Bifunctor.first repl) (succs bb)}
-  st <- get
-  let cfg' = M.insert lab bb' $ cfg st
-  put (st {cfg = cfg'})
+  mapLabelToBB lab bb'
   where
     repl :: Node -> Node
     repl n@(FnBlock l) = if l == labFrom then FnBlock labTo else n
@@ -105,10 +113,32 @@ replaceRefToLabel labFrom labTo (FnBlock lab) = do
 replaceRefToLabel _ _ _ = return ()
 
 mapLabelToBB :: Label -> BB -> CFGM ()
-mapLabelToBB lab bb = modify (\st -> st {cfg = M.insert lab bb $ cfg st})
+mapLabelToBB lab bb = do
+  idt <- asks currFn
+  modify
+    ( \st ->
+        st
+          { cfgs =
+              M.update
+                (Just . M.insert lab bb)
+                idt
+                (cfgs st)
+          }
+    )
 
 removeLabel :: Label -> CFGM ()
-removeLabel lab = modify (\st -> st {cfg = M.delete lab $ cfg st})
+removeLabel lab = do
+  idt <- asks currFn
+  modify
+    ( \st ->
+        st
+          { cfgs =
+              M.update
+                (Just . M.delete lab)
+                idt
+                (cfgs st)
+          }
+    )
 
 addEdgeFromTo :: Label -> Label -> When -> CFGM ()
 addEdgeFromTo lab0 lab1 w = do
@@ -128,17 +158,14 @@ addEntryEdgeTo :: Label -> Ident -> CFGM ()
 addEntryEdgeTo lab fnname = do
   bb <- getBB lab
   let bb' = bb {preds = FnEntry fnname : preds bb}
-  st <- get
-  let cfg' = M.insert lab bb' $ cfg st
-  put (st {cfg = cfg'})
+  mapLabelToBB lab bb'
 
 addRetEdgeFrom :: Label -> When -> CFGM ()
 addRetEdgeFrom lab w = do
   bb <- getBB lab
-  let bb' = bb {succs = (FnRet, w) : succs bb}
-  st <- get
-  let cfg' = M.insert lab bb' $ cfg st
-  put (st {cfg = cfg'})
+  idt <- asks currFn
+  let bb' = bb {succs = (FnRet idt, w) : succs bb}
+  mapLabelToBB lab bb'
 
 takeCurrStmts :: CFGM [Stmt]
 takeCurrStmts = do
@@ -154,7 +181,7 @@ addStmtToCurrBlock s = do
 
 endCurrBlock :: CFGM Label
 endCurrBlock = do
-  currLab <- ask
+  currLab <- asks currLabel
   currStmts <- takeCurrStmts
   putStmtsToBB currLab currStmts
   return currLab
@@ -177,33 +204,33 @@ procStmts (stmt : t) =
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      retLabs <- local (const lab1) $ procStmts [inner]
+      retLabs <- local (withLabel lab1) $ procStmts [inner]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
       addEdgesFromTo retLabs lab2 WhenDone
-      local (const lab2) $ procStmts t
+      local (withLabel lab2) $ procStmts t
     s@(CondElse _ _ innerTrue innerFalse) -> do
       addStmtToCurrBlock s
       currLab <- endCurrBlock
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      retLabsTrue <- local (const lab1) $ procStmts [innerTrue]
+      retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
-      retLabsFalse <- local (const lab2) $ procStmts [innerFalse]
+      retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
 
       lab3 <- freshLabel
       addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
-      local (const lab3) $ procStmts t
+      local (withLabel lab3) $ procStmts t
     s@(While _ _ loopBody) -> do
       currLab <- endCurrBlock
 
       lab1 <- freshLabel
       local
-        (const lab1)
+        (withLabel lab1)
         ( do
             addStmtToCurrBlock s
             _ <- endCurrBlock
@@ -214,13 +241,13 @@ procStmts (stmt : t) =
 
       lab2 <- freshLabel
       addEdgeFromTo lab1 lab2 WhenTrue
-      retLabsTrue <- local (const lab2) $ procStmts [loopBody]
+      retLabsTrue <- local (withLabel lab2) $ procStmts [loopBody]
 
       addEdgesFromTo (lab2 : retLabsTrue) lab1 WhenDone
 
       lab3 <- freshLabel
       addEdgeFromTo lab1 lab3 WhenFalse
-      local (const lab3) $ procStmts t
+      local (withLabel lab3) $ procStmts t
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
@@ -240,29 +267,35 @@ procBlock (Block _ stmts) = do
 procTopDef :: TopDef -> CFGM ()
 procTopDef (FnDef _ _ fnname _ block) = do
   -- TODO process args
-  lab <- ask
-  addEntryEdgeTo lab fnname
-  procBlock block
+  modify (\st -> st {cfgs = M.insert fnname M.empty (cfgs st)})
+  lab <- freshLabel
+  local
+    (const $ Env {currLabel = lab, currFn = fnname})
+    ( do
+        addEntryEdgeTo lab fnname
+        procBlock block
+    )
 
 procProgram :: Program -> CFGM ()
-procProgram (Program _ topdefs) = mapM_ procTopDef topdefs
+procProgram (Program _ topdefs) =
+  mapM_ procTopDef topdefs
 
 runCFGM :: CFGM a -> (a, Store)
 runCFGM m = runReader (runStateT m initStore) initLabel
   where
     initStore =
       Store
-        { cfg = M.empty,
+        { cfgs = M.empty,
           currStmts = [],
           lastLabel = 0,
           defs = M.empty
         }
-    initLabel = 0
+    initLabel = Env {currFn = Ident "??", currLabel = 0}
 
-genCFG :: Program -> CFG
+genCFG :: Program -> M.Map Ident CFG
 genCFG p =
   let (_, st) = runCFGM (procProgram p)
-   in cfg st
+   in cfgs st
 
 printStmts :: [Stmt] -> String
 printStmts (While _ e _ : t) = "while (" ++ printTree e ++ ") {...}" ++ if null t then "" else "\n" ++ printStmts t
@@ -310,8 +343,18 @@ bbToDot bb =
     isFnEntry (FnEntry _) = True
     isFnEntry _ = False
 
-toDot :: CFG -> String
-toDot cfg =
-  "digraph {\n"
+toDotCFG :: Ident -> CFG -> String
+toDotCFG (Ident fnname) cfg =
+  "subgraph \"cluster_"
+    ++ fnname
+    ++ "\" {\n style=\"dashed\";\n color=\"black\";\n label=\""
+    ++ fnname
+    ++ "()\";\n"
     ++ foldr (\(_, bb) acc -> bbToDot bb ++ "\n" ++ acc) [] (M.toList cfg)
+    ++ "}"
+
+toDot :: M.Map Ident CFG -> String
+toDot cfgs =
+  "digraph \"cfgs\" {\noverlap=false;\n"
+    ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
     ++ "}"
