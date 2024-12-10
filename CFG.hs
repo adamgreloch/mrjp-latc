@@ -171,16 +171,56 @@ procStmts (stmt : t) =
       procStmts (stmts ++ t)
     s@(Ret _ _) -> handleRets s
     s@(VRet _) -> handleRets s
-    s@(Cond _ _ condstmt) -> do
+    s@(Cond _ _ inner) -> do
       addStmtToCurrBlock s
       currLab <- endCurrBlock
+
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      retLabs <- local (const lab1) $ procStmts [condstmt]
+      retLabs <- local (const lab1) $ procStmts [inner]
+
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
       addEdgesFromTo retLabs lab2 WhenDone
       local (const lab2) $ procStmts t
+    s@(CondElse _ _ innerTrue innerFalse) -> do
+      addStmtToCurrBlock s
+      currLab <- endCurrBlock
+
+      lab1 <- freshLabel
+      addEdgeFromTo currLab lab1 WhenTrue
+      retLabsTrue <- local (const lab1) $ procStmts [innerTrue]
+
+      lab2 <- freshLabel
+      addEdgeFromTo currLab lab2 WhenFalse
+      retLabsFalse <- local (const lab2) $ procStmts [innerFalse]
+
+      lab3 <- freshLabel
+      addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
+      local (const lab3) $ procStmts t
+    s@(While _ _ loopBody) -> do
+      currLab <- endCurrBlock
+
+      lab1 <- freshLabel
+      local
+        (const lab1)
+        ( do
+            addStmtToCurrBlock s
+            _ <- endCurrBlock
+            return ()
+        )
+
+      addEdgeFromTo currLab lab1 WhenDone
+
+      lab2 <- freshLabel
+      addEdgeFromTo lab1 lab2 WhenTrue
+      retLabsTrue <- local (const lab2) $ procStmts [loopBody]
+
+      addEdgesFromTo (lab2 : retLabsTrue) lab1 WhenDone
+
+      lab3 <- freshLabel
+      addEdgeFromTo lab1 lab3 WhenFalse
+      local (const lab3) $ procStmts t
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
@@ -225,7 +265,9 @@ genCFG p =
    in cfg st
 
 printStmts :: [Stmt] -> String
-printStmts (Cond _ e _ : t) = "if (" ++ printTree e ++ ")" ++ if null t then "" else "\n" ++ printStmts t
+printStmts (While _ e _ : t) = "while (" ++ printTree e ++ ") {...}" ++ if null t then "" else "\n" ++ printStmts t
+printStmts (Cond _ e _ : t) = "if (" ++ printTree e ++ ") {...}" ++ if null t then "" else "\n" ++ printStmts t
+printStmts (CondElse _ e _ _ : t) = "if (" ++ printTree e ++ ") {...} else {...}" ++ if null t then "" else "\n" ++ printStmts t
 printStmts (stmt : t) = printTree stmt ++ if null t then "" else "\n" ++ printStmts t
 printStmts [] = ""
 
@@ -239,13 +281,17 @@ stmtsToDot s =
       (pack (printStmts s))
       replacePatterns
   where
+    -- NOTE: pattern ordering is important here, e.g. "}\n" -> "}" assumes
+    -- "}" -> "\\}" has been applied
     replacePatterns =
       [ (" ", "\\ "),
-        ("{", "\\{"),
-        ("\n", "\\l\\\n|"),
-        ("}\n", "\\}"),
+        (".", "\\."),
         (">", "\\>"),
-        ("<", "\\<")
+        ("<", "\\<"),
+        ("{", "\\{"),
+        ("}", "\\}"),
+        ("\n", "\\l\n|"),
+        ("}\n", "}")
       ]
 
 bbToDot :: BB -> String
@@ -255,7 +301,7 @@ bbToDot bb =
     ++ bbLabStr
     ++ "\n|"
     ++ (stmtsToDot . reverse) (stmts bb)
-    ++ "\\l\\\n}\"];\n\n"
+    ++ "\\l\n}\"];\n\n"
     ++ foldr (\(s, w) acc -> bbLabStr ++ " -> " ++ show s ++ "[label=" ++ show w ++ "];\n" ++ acc) [] (succs bb)
     ++ foldr (\p acc -> show p ++ " -> " ++ bbLabStr ++ ";\n" ++ acc) [] (filter isFnEntry $ preds bb)
   where
