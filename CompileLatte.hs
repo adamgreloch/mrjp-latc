@@ -5,6 +5,7 @@
 module Main where
 
 import AbsLatte
+import CFG
 import Control.Monad (foldM, when)
 import Control.Monad.Except
   ( ExceptT,
@@ -38,7 +39,6 @@ import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
-import CFG
 import TransformAbsToFIR
 import TypeCheckLatte
 import Prelude hiding (lookup)
@@ -358,7 +358,7 @@ run v p s =
       exitFailure
     Right tree -> do
       putStrV v "Parse Successful!"
-      showTree v tree
+      compileProgram v tree
   where
     ts = myLexer s
     showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
@@ -366,8 +366,8 @@ run v p s =
 -- instance (Show (FIRTranslationError' a)) where
 --   show _ = ""
 
-showTree :: Int -> Program -> IO ()
-showTree v tree = do
+compileProgram :: Int -> Program -> IO ()
+compileProgram v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
@@ -375,8 +375,6 @@ showTree v tree = do
   let cfg = genCFG tree
   putStrV v $ "[CFG]\n" ++ show cfg
   when (v == 1) $ putStrLn $ toDot cfg
-
--- interpret v tree
 
 usage :: IO ()
 usage = do
