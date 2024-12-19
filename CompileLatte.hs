@@ -371,7 +371,7 @@ compileProgram v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
-  putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
+  -- putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
   let cfg = genCFG tree
   putStrV v $ "[CFG]\n" ++ show cfg
   when (v == 1) $ putStrLn $ toDot cfg

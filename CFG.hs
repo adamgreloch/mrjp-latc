@@ -1,4 +1,11 @@
-module CFG (genCFG, toDot) where
+module CFG
+  ( genCFG,
+    toDot,
+    Label,
+    CFG,
+    CFGs,
+  )
+where
 
 import AbsLatte
 import Control.Monad.Reader
@@ -43,6 +50,8 @@ data BB = BB
     succs :: [(Node, When)]
   }
   deriving (Show)
+
+type CFGs = M.Map Ident CFG
 
 type CFG = M.Map Label BB
 
@@ -353,7 +362,7 @@ toDotCFG (Ident fnname) cfg =
     ++ foldr (\(_, bb) acc -> bbToDot bb ++ "\n" ++ acc) [] (M.toList cfg)
     ++ "}"
 
-toDot :: M.Map Ident CFG -> String
+toDot :: CFGs -> String
 toDot cfgs =
   "digraph \"cfgs\" {\noverlap=false;\n"
     ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
