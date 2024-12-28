@@ -21,3 +21,6 @@ readerEitherSeq mf (h : t) = do
     (Left l) -> local (const l) (readerEitherSeq mf t)
     (Right r) -> return (Right r)
 readerEitherSeq _ [] = asks Left
+
+class Printable a where
+  printCode :: a -> String

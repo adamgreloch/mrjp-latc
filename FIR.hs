@@ -3,6 +3,7 @@
 module FIR where
 
 import AbsLatte
+import Common (Printable (printCode))
 import Control.Monad.State
   ( MonadState (get, put),
     modify,
@@ -20,7 +21,6 @@ import Data.Map qualified as M
 
 -- | Note: String cannot be an Imm, since it has to be allocated
 data VType = VInt | VStr | VBool | VVoid deriving (Eq)
-
 
 instance Show VType where
   show VInt = "I"
@@ -46,12 +46,14 @@ data Loc
     LFun VType
   | -- | current function argument (i.e. LArg "foo" ~> %arg_foo)
     LArg VType String
+  | LLabel (Maybe Label)
+  | LString String
 
 instance Show Loc where
   show (LImmInt i) = show i
   show (LImmBool b) = show b
   show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
-  show _ = "todo"
+  show (LLabel lab) = case lab of Nothing -> "L?"; (Just l) -> show lab
 
 typeOfLoc :: Loc -> VType
 typeOfLoc l = case l of
@@ -77,6 +79,14 @@ type AddrTypes = Map Addr VType
 -- TODO: code will probably need to be more structured to differentiate basic blocks
 type Code = [Instr]
 
+instance Printable Code where
+  printCode :: Code -> String
+  printCode (i : t) =
+    ( case i of
+        instr -> show instr
+    )
+      ++ if null t then "" else "\n" ++ printCode t
+
 data TopDefFIR = FnDefFIR String Code
 
 instance (Show TopDefFIR) where
@@ -93,14 +103,12 @@ data Store = Store_ {code :: Code, locs :: Map Ident Loc, lastTemp :: Int, lastL
 class Emittable a where
   emit :: (MonadState Store m) => a -> m ()
 
-class Printable a where
-  printCode :: a -> String
-
 -- | Unary operands (Loc := Op1 Loc or Loc Op1 Loc)
 data Op1
-  = Call
-  | Br
+  = Br
   | Asgn
+  | Not
+  | Neg
   deriving (Show)
 
 -- | Binary operands (Loc := Loc Op2 Loc)
@@ -109,14 +117,24 @@ data Op2
   | Sub
   | Mul
   | Div
+  | Mod
   | Load
   | Store
   | CondBr
+  | LTh
+  | LEq
+  | GTh
+  | GEq
+  | Eq
+  | NEq
+  | And
+  | Or
   deriving (Show)
 
 data Instr
   = Bin Op2 Loc Loc Loc
   | Unar Op1 Loc Loc
+  | Call Loc Ident [Loc]
   | IRet Loc
   | IRetVoid
   | ILabel Label

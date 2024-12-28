@@ -28,7 +28,7 @@ AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs TransformAbsToFIR.hs : Latte.cf
 %.hs : %.x
 	${ALEX} ${ALEX_OPTS} $<
 
-CompileLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs Common.hs FIR.hs TransformAbsToFIR.hs CFG.hs CompileLatte.hs
+CompileLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs Common.hs FIR.hs TransformAbsToFIR.hs CFG.hs SSA.hs CompileLatte.hs
 	${GHC} ${GHC_OPTS} $@
 
 # Rules for cleaning generated files.

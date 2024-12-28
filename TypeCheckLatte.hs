@@ -396,7 +396,7 @@ typeCheckProgram v (Program _ tds) = do
       hPutStrLn stderr ("ERROR\nType check error " ++ show te)
       exitFailure
     (Right tenv) -> do
-      when (v /= 1) $ hPutStrLn stderr "OK\n"
+      when (v > 2) $ hPutStrLn stderr "OK\n"
       putStrV v (show tenv)
 
 unique :: [Arg] -> Bool

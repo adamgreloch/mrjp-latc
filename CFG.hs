@@ -1,13 +1,17 @@
 module CFG
-  ( genCFG,
+  ( genCFGs,
     toDot,
     Label,
     CFG,
     CFGs,
+    CFGs',
+    BB',
+    mapTo,
   )
 where
 
 import AbsLatte
+import Common
 import Control.Monad.Reader
   ( MonadReader (local),
     Reader,
@@ -43,20 +47,26 @@ instance Show Node where
   show (FnBlock l) = "L" ++ show l
   show (FnRet (Ident s)) = "FnRet_" ++ s
 
-data BB = BB
+data BB' a = BB'
   { label :: Label,
-    stmts :: [Stmt],
+    stmts :: a,
     preds :: [Node],
     succs :: [(Node, When)]
   }
   deriving (Show)
 
-type CFGs = M.Map Ident CFG
+type CFG' a = M.Map Label (BB' a)
 
-type CFG = M.Map Label BB
+type CFGs' a = M.Map Ident (CFG' a)
+
+type BB = BB' [Stmt]
+
+type CFG = CFG' [Stmt]
+
+type CFGs = CFGs' [Stmt]
 
 data Store = Store
-  { cfgs :: M.Map Ident CFG,
+  { cfgs :: CFGs,
     currStmts :: [Stmt],
     lastLabel :: Label,
     defs :: M.Map Ident (M.Map Label Expr)
@@ -78,7 +88,7 @@ addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
 
 emptyBB :: Label -> BB
-emptyBB label = BB {label, stmts = [], preds = [], succs = []}
+emptyBB label = BB' {label, stmts = [], preds = [], succs = []}
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
@@ -301,33 +311,38 @@ runCFGM m = runReader (runStateT m initStore) initLabel
         }
     initLabel = Env {currFn = Ident "??", currLabel = 0}
 
-genCFG :: Program -> M.Map Ident CFG
-genCFG p =
+genCFGs :: Program -> CFGs
+genCFGs p =
   let (_, st) = runCFGM (procProgram p)
    in cfgs st
 
-printStmts :: [Stmt] -> String
-printStmts (While _ e _ : t) = "while (" ++ printTree e ++ ") {...}" ++ if null t then "" else "\n" ++ printStmts t
-printStmts (Cond _ e _ : t) = "if (" ++ printTree e ++ ") {...}" ++ if null t then "" else "\n" ++ printStmts t
-printStmts (CondElse _ e _ _ : t) = "if (" ++ printTree e ++ ") {...} else {...}" ++ if null t then "" else "\n" ++ printStmts t
-printStmts (stmt : t) = printTree stmt ++ if null t then "" else "\n" ++ printStmts t
-printStmts [] = ""
+instance Printable [Stmt] where
+  printCode (s : t) =
+    ( case s of
+        (While _ e _) -> "while (" ++ printTree e ++ ") {...}"
+        (Cond _ e _) -> "if (" ++ printTree e ++ ") {...}"
+        (CondElse _ e _ _) -> "if (" ++ printTree e ++ ") {...} else {...}"
+        stmt -> printTree stmt
+    )
+      ++ if null t then "" else "\n" ++ printCode t
 
-stmtsToDot :: [Stmt] -> String
-stmtsToDot s =
+printableToDot :: (Printable [a]) => [a] -> String
+printableToDot s =
   unpack $
     foldr
       ( \(from, to) acc ->
           replace (pack from) (pack to) acc
       )
-      (pack (printStmts s))
+      (pack (printCode s))
       replacePatterns
   where
     -- NOTE: pattern ordering is important here, e.g. "}\n" -> "}" assumes
     -- "}" -> "\\}" has been applied
     replacePatterns =
       [ (" ", "\\ "),
+        ("\"", "\\\""),
         (".", "\\."),
+        ("%", "\\%"),
         (">", "\\>"),
         ("<", "\\<"),
         ("{", "\\{"),
@@ -336,13 +351,13 @@ stmtsToDot s =
         ("}\n", "}")
       ]
 
-bbToDot :: BB -> String
+bbToDot :: (Printable [a]) => BB' [a] -> String
 bbToDot bb =
   bbLabStr
     ++ " [shape=record,style=filled,fillcolor=lightgrey,label=\"{"
     ++ bbLabStr
     ++ "\n|"
-    ++ (stmtsToDot . reverse) (stmts bb)
+    ++ (printableToDot . reverse) (stmts bb)
     ++ "\\l\n}\"];\n\n"
     ++ foldr (\(s, w) acc -> bbLabStr ++ " -> " ++ show s ++ "[label=" ++ show w ++ "];\n" ++ acc) [] (succs bb)
     ++ foldr (\p acc -> show p ++ " -> " ++ bbLabStr ++ ";\n" ++ acc) [] (filter isFnEntry $ preds bb)
@@ -352,7 +367,7 @@ bbToDot bb =
     isFnEntry (FnEntry _) = True
     isFnEntry _ = False
 
-toDotCFG :: Ident -> CFG -> String
+toDotCFG :: (Printable [a]) => Ident -> CFG' [a] -> String
 toDotCFG (Ident fnname) cfg =
   "subgraph \"cluster_"
     ++ fnname
@@ -362,8 +377,11 @@ toDotCFG (Ident fnname) cfg =
     ++ foldr (\(_, bb) acc -> bbToDot bb ++ "\n" ++ acc) [] (M.toList cfg)
     ++ "}"
 
-toDot :: CFGs -> String
+toDot :: (Printable [a]) => CFGs' [a] -> String
 toDot cfgs =
   "digraph \"cfgs\" {\noverlap=false;\n"
     ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
     ++ "}"
+
+mapTo :: (a -> b) -> CFGs' a -> CFGs' b
+mapTo f = M.map (M.map (\bb -> bb {stmts = f (stmts bb)}))

@@ -35,6 +35,7 @@ import Helper
 import LexLatte (Token, mkPosToken)
 import ParLatte (myLexer, pProgram)
 import PrintLatte (printTree)
+import SSA
 import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -372,9 +373,12 @@ compileProgram v tree = do
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   typeCheckProgram v tree
   -- putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
-  let cfg = genCFG tree
-  putStrV v $ "[CFG]\n" ++ show cfg
-  when (v == 1) $ putStrLn $ toDot cfg
+  let cfgs = genCFGs tree
+  putStrV v $ "[CFGs]\n" ++ show cfgs
+  let fircfgs = toFIRCFGs cfgs
+  putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
+  when (v == 1) $ putStrLn $ toDot cfgs
+  when (v == 2) $ putStrLn $ toDot fircfgs
 
 usage :: IO ()
 usage = do
@@ -396,4 +400,5 @@ main = do
     [] -> getContents >>= run 5 pProgram
     "-s" : fs -> mapM_ (runFile 0 pProgram) fs
     "-g" : fs -> mapM_ (runFile 1 pProgram) fs
+    "-f" : fs -> mapM_ (runFile 2 pProgram) fs
     fs -> mapM_ (runFile 5 pProgram) fs
