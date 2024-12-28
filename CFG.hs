@@ -260,9 +260,9 @@ procStmts (stmt : t) =
 
       lab2 <- freshLabel
       addEdgeFromTo lab1 lab2 WhenTrue
-      retLabsTrue <- local (withLabel lab2) $ procStmts [loopBody]
+      retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
 
-      addEdgesFromTo (lab2 : retLabsTrue) lab1 WhenDone
+      addEdgesFromTo retLabsDone lab1 WhenDone
 
       lab3 <- freshLabel
       addEdgeFromTo lab1 lab3 WhenFalse
