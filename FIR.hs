@@ -53,7 +53,7 @@ instance Show Loc where
   show (LImmInt i) = show i
   show (LImmBool b) = show b
   show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
-  show (LLabel lab) = case lab of Nothing -> "L?"; (Just l) -> show lab
+  show (LLabel lab) = "%L" ++ maybe "?" show lab
 
 typeOfLoc :: Loc -> VType
 typeOfLoc l = case l of

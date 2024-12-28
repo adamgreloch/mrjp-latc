@@ -5,8 +5,11 @@ module CFG
     CFG,
     CFGs,
     CFGs',
-    BB',
+    BB' (BB', label, stmts, preds, succs),
     mapTo,
+    succTrue,
+    succFalse,
+    succDone,
   )
 where
 
@@ -26,13 +29,14 @@ import Control.Monad.State
     runStateT,
   )
 import Data.Bifunctor qualified
+import Data.List (find)
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
 import PrintLatte (printTree)
 
 type Label = Int
 
-data When = WhenTrue | WhenFalse | WhenLoop | WhenDone
+data When = WhenTrue | WhenFalse | WhenLoop | WhenDone deriving (Eq)
 
 instance Show When where
   show WhenTrue = "True"
@@ -76,6 +80,22 @@ data Store = Store
 data Env = Env {currLabel :: Label, currFn :: Ident}
 
 type CFGM a = StateT Store (Reader Env) a
+
+succWhen :: When -> BB -> Maybe Label
+succWhen when bb = (\(FnBlock l, b) -> Just l) =<< find isBlock (succs bb)
+  where
+    isBlock :: (Node, When) -> Bool
+    isBlock (FnBlock _, w) = w == when
+    isBlock _ = False
+
+succDone :: BB -> Maybe Label
+succDone = succWhen WhenDone
+
+succTrue :: BB -> Maybe Label
+succTrue = succWhen WhenTrue
+
+succFalse :: BB -> Maybe Label
+succFalse = succWhen WhenFalse
 
 freshLabel :: CFGM Label
 freshLabel = do
@@ -383,5 +403,5 @@ toDot cfgs =
     ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
     ++ "}"
 
-mapTo :: (a -> b) -> CFGs' a -> CFGs' b
-mapTo f = M.map (M.map (\bb -> bb {stmts = f (stmts bb)}))
+mapTo :: (BB' a -> BB' b) -> CFGs' a -> CFGs' b
+mapTo f = M.map $ M.map f

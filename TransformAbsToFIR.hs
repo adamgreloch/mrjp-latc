@@ -5,7 +5,9 @@ module TransformAbsToFIR
 where
 
 import AbsLatte
+import CFG
 import Common
+import Control.Monad (unless)
 import Control.Monad.Except
   ( ExceptT,
     MonadError (throwError),
@@ -28,7 +30,6 @@ import Data.Map (Map)
 import Data.Map qualified as M
 import FIR
 import GHC.Base (assert)
-import Control.Monad (unless)
 
 data FIRTranslationError' a
   = UnexpectedError a
@@ -46,7 +47,7 @@ freshTemp = do
   put (st {lastTemp = fresh})
   return (Temp fresh)
 
-freshLabel :: GenM Label
+freshLabel :: GenM FIR.Label
 freshLabel = do
   st <- get
   let fresh = lastLabel st + 1
@@ -250,6 +251,9 @@ genStmts (While _ e _ : t) = do
   unless (null t) $ error "BB should end with CondBr (While)"
 genStmts (BStmt _ b : t) = error "should never happen"
 
+setLabels :: Instr -> Instr
+setLabels (Bin CondBr _ (LLabel Nothing) (LLabel Nothing)) = error "should never happen"
+
 runGenM :: GenM a -> (a, Store)
 runGenM m = runState m initStore
   where
@@ -261,5 +265,17 @@ runGenM m = runState m initStore
           locs = M.empty
         }
 
-genFIR :: [Stmt] -> Code
-genFIR stmts = let (_, st) = runGenM $ genStmts (reverse stmts) in code st
+genFIR :: BB' [Stmt] -> BB' Code
+genFIR bb =
+  let (_, st) = runGenM $ genStmts (reverse (stmts bb))
+   in bb {stmts = withJumpLabel $ code st}
+  where
+    withJumpLabel :: Code -> Code
+    withJumpLabel cd =
+      let h : t = cd
+       in ( case h of
+              Bin CondBr loc (LLabel Nothing) (LLabel Nothing) -> Bin CondBr loc (LLabel $ succTrue bb) (LLabel $ succFalse bb)
+              Br (LLabel Nothing) -> Br (LLabel $ succDone bb)
+              _else -> h
+          )
+            : t
