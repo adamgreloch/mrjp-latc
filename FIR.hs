@@ -105,8 +105,7 @@ class Emittable a where
 
 -- | Unary operands (Loc := Op1 Loc or Loc Op1 Loc)
 data Op1
-  = Br
-  | Asgn
+  = Asgn
   | Not
   | Neg
   deriving (Show)
@@ -134,6 +133,7 @@ data Op2
 data Instr
   = Bin Op2 Loc Loc Loc
   | Unar Op1 Loc Loc
+  | Br Loc
   | Call Loc Ident [Loc]
   | IRet Loc
   | IRetVoid

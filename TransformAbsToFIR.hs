@@ -28,6 +28,7 @@ import Data.Map (Map)
 import Data.Map qualified as M
 import FIR
 import GHC.Base (assert)
+import Control.Monad (unless)
 
 data FIRTranslationError' a
   = UnexpectedError a
@@ -193,7 +194,7 @@ example1 =
   ]
 
 genStmts :: [Stmt] -> GenM ()
-genStmts [] = return ()
+genStmts [] = emit $ Br (LLabel Nothing)
 genStmts (Decl _ tp items : t) = do
   mapM_ declareItem items
   genStmts t
@@ -220,11 +221,11 @@ genStmts (SExp _ e : t) = do
   genStmts t
 genStmts (VRet _ : t) = do
   emit IRetVoid
-  genStmts t
+  unless (null t) $ error "BB should end with VRet"
 genStmts (Ret _ e : t) = do
   loc <- genExp e
   emit $ IRet loc
-  genStmts t
+  unless (null t) $ error "BB should end with Ret"
 genStmts (Incr p idt : t) = do
   genExp (EAdd p (EVar p idt) (Plus p) (ELitInt p 1))
   genStmts t
@@ -238,15 +239,15 @@ genStmts (Decr p idt : t) = do
 genStmts (Cond _ e _ : t) = do
   loc <- genExp e
   emit $ Bin CondBr loc (LLabel Nothing) (LLabel Nothing)
-  genStmts t
+  unless (null t) $ error "BB should end with CondBr"
 genStmts (CondElse _ e _ _ : t) = do
   loc <- genExp e
   emit $ Bin CondBr loc (LLabel Nothing) (LLabel Nothing)
-  genStmts t
+  unless (null t) $ error "BB should end with CondElse"
 genStmts (While _ e _ : t) = do
   loc <- genExp e
   emit $ Bin CondBr loc (LLabel Nothing) (LLabel Nothing)
-  genStmts t
+  unless (null t) $ error "BB should end with CondBr (While)"
 genStmts (BStmt _ b : t) = error "should never happen"
 
 runGenM :: GenM a -> (a, Store)
