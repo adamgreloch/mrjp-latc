@@ -15,3 +15,6 @@ TestLatte*
 InterpretLatte
 CompileLatte
 !*.hs
+small/
+*.dot
+*.svg
