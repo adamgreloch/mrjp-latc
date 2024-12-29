@@ -3,7 +3,7 @@
 module FIR where
 
 import AbsLatte
-import CFGDefs (Label)
+import CFGDefs (Label, Bindings, Defs)
 import Common (Printable (printCode))
 import Control.Monad.State
   ( MonadState (get, put),
@@ -24,7 +24,7 @@ data Addr = Cmp Int | Var Ident Int | Temp Int
 
 instance Show Addr where
   show (Cmp i) = "%cmp_" ++ show i
-  show (Var (Ident s) i) = "%" ++ s ++ show i
+  show (Var (Ident s) i) = "%" ++ s ++ "_" ++ show i
   show (Temp i) = "%t" ++ show i
 
 data Loc
@@ -69,8 +69,6 @@ initValue vtp =
     VStr -> LString ""
     _else -> error $ show vtp ++ " as init type?"
 
-type SLoc = Int
-
 type AddrTypes = Map Addr VType
 
 type Code = [Instr]
@@ -95,7 +93,9 @@ data FIRStore = FIRStore_
   { code :: Code,
     locs :: Map Ident Loc,
     lastTemp :: Int,
-    lastLabel :: Label
+    lastLabel :: Label,
+    blockBindings :: Bindings,
+    defs :: Defs
   }
   deriving (Show)
 

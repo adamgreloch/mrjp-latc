@@ -1,11 +1,12 @@
-module CFGDefs
-where
+module CFGDefs where
 
-import AbsLatte (Ident (..), Stmt)
-import Data.Map qualified as M
+import AbsLatte (Ident (..), Stmt, Type)
 import Data.List (find)
+import Data.Map qualified as M
 
 type Label = Int
+
+type SLoc = Int
 
 data When = WhenTrue | WhenFalse | WhenLoop | WhenDone deriving (Eq)
 
@@ -22,19 +23,24 @@ instance Show Node where
   show (FnBlock l) = "L" ++ show l
   show (FnRet (Ident s)) = "FnRet_" ++ s
 
+type Bindings = M.Map Ident SLoc
+
+type Defs = M.Map SLoc (Type, Label)
+
 data BB' a = BB'
   { label :: Label,
     stmts :: a,
     preds :: [Node],
-    succs :: [(Node, When)]
+    succs :: [(Node, When)],
+    bindings :: Bindings
   }
   deriving (Show)
 
 type CFG' a = M.Map Label (BB' a)
 
-type CFGs' a = M.Map Ident (CFG' a)
+type CFGsNoDefs' a = M.Map Ident (CFG' a)
 
-
+type CFGs' a = (CFGsNoDefs' a, Defs)
 
 succWhen :: When -> BB' a -> Maybe Label
 succWhen when bb = (\(FnBlock l, b) -> Just l) =<< find isBlock (succs bb)

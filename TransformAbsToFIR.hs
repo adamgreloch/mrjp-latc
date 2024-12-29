@@ -62,7 +62,7 @@ getLoc idt = do
     Nothing -> error $ "no loc for " ++ show idt
 
 genExp :: Expr -> GenM Loc
-genExp (EVar _ id) = return (LAddr VInt (Var id 0))
+genExp (EVar _ idt) = getLocFromBinding idt
 genExp (ELitInt _ n) = return (LImmInt (fromIntegral n))
 genExp (ELitTrue _) = return (LImmBool True)
 genExp (ELitFalse _) = return (LImmBool False)
@@ -200,6 +200,16 @@ newIdentLoc idt vtp = do
   modify (\st -> st {locs = M.insert idt loc (locs st)})
   return loc
 
+getLocFromBinding :: Ident -> GenM Loc
+getLocFromBinding idt = do
+  st <- get
+  case M.lookup idt (blockBindings st) of
+    Just sloc ->
+      case M.lookup sloc (defs st) of
+        Just (tp, lab) -> return (LAddr (toVType tp) (Var idt lab))
+        Nothing ->  error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
+    Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
+
 genStmts :: [Stmt] -> GenM ()
 genStmts [] = emit $ Br (LLabel Nothing)
 genStmts (Decl _ tp items : t) = do
@@ -210,15 +220,15 @@ genStmts (Decl _ tp items : t) = do
     vtp = toVType tp
     declareItem :: Item -> GenM ()
     declareItem (NoInit _ idt) = do
-      iloc <- newIdentLoc idt vtp
+      iloc <- getLocFromBinding idt
       emit $ Unar Asgn iloc (initValue vtp)
     declareItem (Init _ idt e) = do
-      iloc <- newIdentLoc idt vtp
+      iloc <- getLocFromBinding idt
       loc <- genExp e
       emit $ Unar Asgn iloc loc
 genStmts (Ass _ idt e : t) = do
   loc <- genExp e
-  let vloc = LAddr VInt (Var idt 0)
+  vloc <- getLocFromBinding idt
   modify (\st -> st {locs = M.insert idt vloc (locs st)})
   emit $ Unar Asgn vloc loc
   genStmts t
@@ -259,17 +269,6 @@ genStmts (BStmt _ b : t) = error "should never happen"
 setLabels :: Instr -> Instr
 setLabels (Bin CondBr _ (LLabel Nothing) (LLabel Nothing)) = error "should never happen"
 
-runGenM :: GenM a -> (a, FIRStore)
-runGenM m = runState m initStore
-  where
-    initStore =
-      FIRStore_
-        { lastLabel = 0,
-          lastTemp = 0,
-          code = [],
-          locs = M.empty
-        }
-
 withJumpLabel :: BB' Code -> BB' Code
 withJumpLabel bb =
   bb
@@ -284,9 +283,18 @@ withJumpLabel bb =
   where
     h : t = stmts bb
 
-genFIR :: BB' [Stmt] -> BB' Code
-genFIR bb =
-  let (_, st) = runGenM $ genStmts (reverse (stmts bb))
+genFIR :: Defs -> BB' [Stmt] -> BB' Code
+genFIR defs bb =
+  let (_, st) = runState m initStore
    in withJumpLabel $ bb {stmts = code st}
-
-
+  where
+    m = genStmts (reverse (stmts bb))
+    initStore =
+      FIRStore_
+        { lastLabel = 0,
+          lastTemp = 0,
+          code = [],
+          locs = M.empty,
+          blockBindings = bindings bb,
+          defs
+        }

@@ -14,7 +14,7 @@ import AbsLatte
 import CFGDefs
 import Common
 import Control.Monad.Reader
-  ( MonadReader (local, ask),
+  ( MonadReader (ask, local),
     Reader,
     asks,
     runReader,
@@ -37,17 +37,23 @@ type BB = BB' [Stmt]
 
 type CFG = CFG' [Stmt]
 
+type CFGsNoDefs = CFGsNoDefs' [Stmt]
+
 type CFGs = CFGs' [Stmt]
 
 data Store = Store
-  { cfgs :: CFGs,
+  { cfgs :: CFGsNoDefs,
     currStmts :: [Stmt],
     lastLabel :: Label,
-    defs :: M.Map Ident (M.Map Label Expr)
+    cfgDefs :: Defs
   }
   deriving (Show)
 
-data Env = Env {currLabel :: Label, currFn :: Ident}
+data Env = Env
+  { currLabel :: Label,
+    currFn :: Ident,
+    currBindings :: Bindings
+  }
 
 type CFGM a = StateT Store (Reader Env) a
 
@@ -62,10 +68,13 @@ addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
 
 emptyBB :: Label -> BB
-emptyBB label = BB' {label, stmts = [], preds = [], succs = []}
+emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.empty}
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
+
+withLabelAndEnv :: Label -> Env -> Env
+withLabelAndEnv lab env = env {currLabel = lab}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -89,6 +98,12 @@ putStmtsToBB :: Label -> [Stmt] -> CFGM ()
 putStmtsToBB lab stmts = do
   bb <- getBB lab
   let bb' = bb {stmts = stmts}
+  mapLabelToBB lab bb'
+
+putBindingsToBB :: Label -> Bindings -> CFGM ()
+putBindingsToBB lab bdg = do
+  bb <- getBB lab
+  let bb' = bb {bindings = bdg}
   mapLabelToBB lab bb'
 
 addEdgesFromTo :: [Label] -> Label -> When -> CFGM ()
@@ -140,12 +155,20 @@ addEdgeFromTo lab0 lab1 w = do
   if null (stmts bb0) && null (succs bb0)
     then do
       mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
-      mapM_ (\(l, _) -> replaceRefToLabel lab0 lab1 l) (succs bb0)
-      mapLabelToBB lab1 $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0 ++ preds bb1}
+      mapLabelToBB lab1 $ bb1 {preds = preds bb0 ++ preds bb1}
       removeLabel lab0
     else do
       mapLabelToBB lab0 $ bb0 {succs = (FnBlock lab1, w) : succs bb0}
       mapLabelToBB lab1 $ bb1 {preds = FnBlock lab0 : preds bb1}
+
+mergeLabels :: Label -> Label -> CFGM ()
+mergeLabels lab0 lab1 = do
+  bb0 <- getBB lab0
+  bb1 <- getBB lab1
+  mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
+  mapM_ (\(l, _) -> replaceRefToLabel lab0 lab1 l) (succs bb0)
+  mapLabelToBB lab1 $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0}
+  removeLabel lab0
 
 addEntryEdgeTo :: Label -> Ident -> CFGM ()
 addEntryEdgeTo lab fnname = do
@@ -175,8 +198,13 @@ addStmtToCurrBlock s = do
 endCurrBlock :: CFGM Label
 endCurrBlock = do
   currLab <- asks currLabel
+
   currStmts <- takeCurrStmts
   putStmtsToBB currLab currStmts
+
+  currBdgs <- asks currBindings
+  putBindingsToBB currLab currBdgs
+
   return currLab
 
 procStmts :: [Stmt] -> CFGM (Env, [Label])
@@ -189,11 +217,23 @@ procStmts (stmt : t) =
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
       -- handled by cond flow already
-      procStmts (stmts ++ t)
-    s@(Ret _ _) -> handleRets s
-    s@(VRet _) -> handleRets s
-    s@(Cond _ _ inner) -> do
-      addStmtToCurrBlock s
+      currLab <- endCurrBlock
+      lab1 <- freshLabel
+      addEdgeFromTo currLab lab1 WhenDone
+      (_, retLabs) <- local (withLabel lab1) $ procStmts stmts
+
+      lab2 <- freshLabel
+      addEdgesFromTo retLabs lab2 WhenDone
+
+      -- TODO merge labels as BStmts can be inlined, we only care about
+      -- proper variable management
+      -- mergeLabels currLab lab1
+      -- mergeLabels lab1 lab2
+      local (withLabel lab2) $ procStmts t
+    (Ret _ _) -> handleRets stmt
+    (VRet _) -> handleRets stmt
+    (Cond _ _ inner) -> do
+      addStmtToCurrBlock stmt
       currLab <- endCurrBlock
 
       lab1 <- freshLabel
@@ -204,8 +244,8 @@ procStmts (stmt : t) =
       addEdgeFromTo currLab lab2 WhenFalse
       addEdgesFromTo retLabs lab2 WhenDone
       local (withLabel lab2) $ procStmts t
-    s@(CondElse _ _ innerTrue innerFalse) -> do
-      addStmtToCurrBlock s
+    (CondElse _ _ innerTrue innerFalse) -> do
+      addStmtToCurrBlock stmt
       currLab <- endCurrBlock
 
       lab1 <- freshLabel
@@ -219,14 +259,14 @@ procStmts (stmt : t) =
       lab3 <- freshLabel
       addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
       local (withLabel lab3) $ procStmts t
-    s@(While _ _ loopBody) -> do
+    (While _ _ loopBody) -> do
       currLab <- endCurrBlock
 
       lab1 <- freshLabel
       local
         (withLabel lab1)
         ( do
-            addStmtToCurrBlock s
+            addStmtToCurrBlock stmt
             _ <- endCurrBlock
             return ()
         )
@@ -242,6 +282,14 @@ procStmts (stmt : t) =
       lab3 <- freshLabel
       addEdgeFromTo lab1 lab3 WhenFalse
       local (withLabel lab3) $ procStmts t
+    (Decl p tp items) -> do
+      env' <- readerSeq declareItem items
+      addStmtToCurrBlock stmt
+      local (const env') $ procStmts t
+      where
+        declareItem :: Item -> CFGM Env
+        declareItem (NoInit _ idt) = addBinding idt tp
+        declareItem (Init _ idt _) = addBinding idt tp
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
@@ -254,6 +302,24 @@ procStmts (stmt : t) =
       env <- ask
       return (env, [])
 
+addBinding :: Ident -> Type -> CFGM Env
+addBinding idt tp = do
+  sloc <- newSLoc
+  currLab <- asks currLabel
+  modify (\st -> st
+          { cfgDefs = M.insert sloc (tp, currLab) (cfgDefs st)
+          })
+  env <- ask
+  return env {currBindings = M.insert idt sloc (currBindings env)}
+
+newSLoc :: CFGM SLoc
+newSLoc = gets (M.size . cfgDefs)
+
+renameIdent :: Ident -> CFGM Ident
+renameIdent idt@(Ident s) = do
+  currLab <- asks currLabel
+  return (Ident $ s ++ show currLab)
+
 procBlock :: Block -> CFGM ()
 procBlock (Block _ stmts) = do
   _ <- procStmts stmts
@@ -265,7 +331,13 @@ procTopDef (FnDef _ _ fnname _ block) = do
   modify (\st -> st {cfgs = M.insert fnname M.empty (cfgs st)})
   lab <- freshLabel
   local
-    (const $ Env {currLabel = lab, currFn = fnname})
+    ( const $
+        Env
+          { currLabel = lab,
+            currFn = fnname,
+            currBindings = M.empty
+          }
+    )
     ( do
         addEntryEdgeTo lab fnname
         procBlock block
@@ -283,14 +355,19 @@ runCFGM m = runReader (runStateT m initStore) initLabel
         { cfgs = M.empty,
           currStmts = [],
           CFG.lastLabel = 0,
-          defs = M.empty
+          cfgDefs = M.empty
         }
-    initLabel = Env {currFn = Ident "??", currLabel = 0}
+    initLabel =
+      Env
+        { currFn = Ident "??",
+          currLabel = 0,
+          currBindings = M.empty
+        }
 
 genCFGs :: Program -> CFGs
 genCFGs p =
   let (_, st) = runCFGM (procProgram p)
-   in cfgs st
+   in (cfgs st, cfgDefs st)
 
 instance Printable [Stmt] where
   printCode (s : t) =
@@ -354,10 +431,10 @@ toDotCFG (Ident fnname) cfg =
     ++ "}"
 
 toDot :: (Printable [a]) => CFGs' [a] -> String
-toDot cfgs =
+toDot (cfgs, _) =
   "digraph \"cfgs\" {\noverlap=false;\n"
     ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
     ++ "}"
 
-mapTo :: (BB' a -> BB' b) -> CFGs' a -> CFGs' b
-mapTo f = M.map $ M.map f
+mapTo :: (Defs -> BB' a -> BB' b) -> CFGs' a -> CFGs' b
+mapTo f (cfgs, defs) = (M.map (M.map (f defs)) cfgs, defs)
