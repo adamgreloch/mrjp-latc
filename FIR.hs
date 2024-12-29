@@ -11,15 +11,6 @@ import Control.Monad.State
 import Data.Map (Map)
 import Data.Map qualified as M
 
--- This is a first-level, linear IR that mirrors LLVM IR
--- Goals:
---  1. CFG should be derivable out of this (CT 4.4.4)
---  2. Later on, also some variable definition/use dependence graph
-
--- Regarding dependecy graph:
--- vertices = Locs/addrs?
-
--- | Note: String cannot be an Imm, since it has to be allocated
 data VType = VInt | VStr | VBool | VVoid deriving (Eq)
 
 instance Show VType where
@@ -42,8 +33,6 @@ data Loc
     LImmBool Bool
   | -- | address of a temporary register (i.e. LAddr 1 ~> %loc_i)
     LAddr VType Addr
-  | -- | indicates that the identifier is bound to a function with a return type
-    LFun VType
   | -- | current function argument (i.e. LArg "foo" ~> %arg_foo)
     LArg VType String
   | LLabel (Maybe Label)
@@ -60,7 +49,6 @@ typeOfLoc l = case l of
   (LImmInt _) -> VInt
   (LImmBool _) -> VBool
   (LAddr tp _) -> tp
-  (LFun tp) -> tp
   (LArg tp _) -> tp
 
 toVType :: Type -> VType
@@ -76,7 +64,6 @@ type SLoc = Int
 
 type AddrTypes = Map Addr VType
 
--- TODO: code will probably need to be more structured to differentiate basic blocks
 type Code = [Instr]
 
 instance Printable Code where
@@ -153,15 +140,3 @@ takeCode = do
   let res = code st
   put (st {code = []})
   return res
-
--- Printable needs to know type table
--- instance (Printable Op2) where
---   printCode op =
---     case op of
---       Add -> "add"
---       Sub -> "sub"
---       Mul -> "mul"
---       FIR.Div -> "div"
---
--- instance (Printable Op) where
---   printCode (BinOp a o l1 l2) = printCode a ++ " = " ++ printCode o ++ printCode l1 ++ printCode l2
