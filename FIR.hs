@@ -3,6 +3,7 @@
 module FIR where
 
 import AbsLatte
+import CFGDefs (Label)
 import Common (Printable (printCode))
 import Control.Monad.State
   ( MonadState (get, put),
@@ -60,6 +61,14 @@ toVType tp =
     (Void _) -> VVoid
     (Fun {}) -> error "should not need to check the fn type"
 
+initValue :: VType -> Loc
+initValue vtp =
+  case vtp of
+    VInt -> LImmInt 0
+    VBool -> LImmBool False
+    VStr -> LString ""
+    _else -> error $ show vtp ++ " as init type?"
+
 type SLoc = Int
 
 type AddrTypes = Map Addr VType
@@ -82,13 +91,16 @@ instance (Show TopDefFIR) where
 
 type ProgramFIR = [TopDefFIR]
 
-type Label = Int
-
-data Store = Store_ {code :: Code, locs :: Map Ident Loc, lastTemp :: Int, lastLabel :: Label}
+data FIRStore = FIRStore_
+  { code :: Code,
+    locs :: Map Ident Loc,
+    lastTemp :: Int,
+    lastLabel :: Label
+  }
   deriving (Show)
 
 class Emittable a where
-  emit :: (MonadState Store m) => a -> m ()
+  emit :: (MonadState FIRStore m) => a -> m ()
 
 -- | Unary operands (Loc := Op1 Loc or Loc Op1 Loc)
 data Op1
@@ -105,7 +117,6 @@ data Op2
   | Div
   | Mod
   | Load
-  | Store
   | CondBr
   | LTh
   | LEq
@@ -133,8 +144,8 @@ instance (Emittable Code) where
 instance (Emittable Instr) where
   emit o = modify (\st -> st {code = o : code st})
 
--- | Takes emmited code from Store and cleans Store.code
-takeCode :: (MonadState Store m) => m Code
+-- | Takes emmited code from FIRStore and cleans FIRStore.code
+takeCode :: (MonadState FIRStore m) => m Code
 takeCode = do
   st <- get
   let res = code st

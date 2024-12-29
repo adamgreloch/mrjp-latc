@@ -7,16 +7,14 @@ module CFG
     CFGs',
     BB' (BB', label, stmts, preds, succs),
     mapTo,
-    succTrue,
-    succFalse,
-    succDone,
   )
 where
 
 import AbsLatte
+import CFGDefs
 import Common
 import Control.Monad.Reader
-  ( MonadReader (local),
+  ( MonadReader (local, ask),
     Reader,
     asks,
     runReader,
@@ -29,39 +27,11 @@ import Control.Monad.State
     runStateT,
   )
 import Data.Bifunctor qualified
-import Data.List (find)
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
+import FIR
 import PrintLatte (printTree)
-
-type Label = Int
-
-data When = WhenTrue | WhenFalse | WhenLoop | WhenDone deriving (Eq)
-
-instance Show When where
-  show WhenTrue = "True"
-  show WhenFalse = "False"
-  show WhenLoop = "Loop"
-  show WhenDone = "Done"
-
-data Node = FnEntry Ident | FnBlock Label | FnRet Ident deriving (Eq)
-
-instance Show Node where
-  show (FnEntry (Ident s)) = "FnEntry_" ++ s
-  show (FnBlock l) = "L" ++ show l
-  show (FnRet (Ident s)) = "FnRet_" ++ s
-
-data BB' a = BB'
-  { label :: Label,
-    stmts :: a,
-    preds :: [Node],
-    succs :: [(Node, When)]
-  }
-  deriving (Show)
-
-type CFG' a = M.Map Label (BB' a)
-
-type CFGs' a = M.Map Ident (CFG' a)
+import TransformAbsToFIR
 
 type BB = BB' [Stmt]
 
@@ -81,27 +51,11 @@ data Env = Env {currLabel :: Label, currFn :: Ident}
 
 type CFGM a = StateT Store (Reader Env) a
 
-succWhen :: When -> BB -> Maybe Label
-succWhen when bb = (\(FnBlock l, b) -> Just l) =<< find isBlock (succs bb)
-  where
-    isBlock :: (Node, When) -> Bool
-    isBlock (FnBlock _, w) = w == when
-    isBlock _ = False
-
-succDone :: BB -> Maybe Label
-succDone = succWhen WhenDone
-
-succTrue :: BB -> Maybe Label
-succTrue = succWhen WhenTrue
-
-succFalse :: BB -> Maybe Label
-succFalse = succWhen WhenFalse
-
 freshLabel :: CFGM Label
 freshLabel = do
   st <- get
-  let fresh = lastLabel st + 1
-  put (st {lastLabel = fresh})
+  let fresh = CFG.lastLabel st + 1
+  put (st {CFG.lastLabel = fresh})
   return fresh
 
 addBBToCFG :: BB -> CFGM ()
@@ -225,10 +179,11 @@ endCurrBlock = do
   putStmtsToBB currLab currStmts
   return currLab
 
-procStmts :: [Stmt] -> CFGM [Label]
+procStmts :: [Stmt] -> CFGM (Env, [Label])
 procStmts [] = do
   currLab <- endCurrBlock
-  return [currLab]
+  env <- ask
+  return (env, [currLab])
 procStmts (stmt : t) =
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
@@ -243,7 +198,7 @@ procStmts (stmt : t) =
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      retLabs <- local (withLabel lab1) $ procStmts [inner]
+      (_, retLabs) <- local (withLabel lab1) $ procStmts [inner]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
@@ -255,11 +210,11 @@ procStmts (stmt : t) =
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
+      (_, retLabsTrue) <- local (withLabel lab1) $ procStmts [innerTrue]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
-      retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
+      (_, retLabsFalse) <- local (withLabel lab2) $ procStmts [innerFalse]
 
       lab3 <- freshLabel
       addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
@@ -280,7 +235,7 @@ procStmts (stmt : t) =
 
       lab2 <- freshLabel
       addEdgeFromTo lab1 lab2 WhenTrue
-      retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
+      (_, retLabsDone) <- local (withLabel lab2) $ procStmts [loopBody]
 
       addEdgesFromTo retLabsDone lab1 WhenDone
 
@@ -291,12 +246,13 @@ procStmts (stmt : t) =
       addStmtToCurrBlock stmt
       procStmts t
   where
-    handleRets :: Stmt -> CFGM [Label]
+    handleRets :: Stmt -> CFGM (Env, [Label])
     handleRets s = do
       addStmtToCurrBlock s
       currLab <- endCurrBlock
       addRetEdgeFrom currLab WhenDone
-      return []
+      env <- ask
+      return (env, [])
 
 procBlock :: Block -> CFGM ()
 procBlock (Block _ stmts) = do
@@ -326,7 +282,7 @@ runCFGM m = runReader (runStateT m initStore) initLabel
       Store
         { cfgs = M.empty,
           currStmts = [],
-          lastLabel = 0,
+          CFG.lastLabel = 0,
           defs = M.empty
         }
     initLabel = Env {currFn = Ident "??", currLabel = 0}

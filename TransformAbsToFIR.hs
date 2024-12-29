@@ -5,7 +5,7 @@ module TransformAbsToFIR
 where
 
 import AbsLatte
-import CFG
+import CFGDefs
 import Common
 import Control.Monad (unless)
 import Control.Monad.Except
@@ -38,7 +38,7 @@ data FIRTranslationError' a
 
 type FIRTranslationError = FIRTranslationError' BNFC'Position
 
-type GenM a = State Store a
+type GenM a = State FIRStore a
 
 freshTemp :: GenM Addr
 freshTemp = do
@@ -47,7 +47,7 @@ freshTemp = do
   put (st {lastTemp = fresh})
   return (Temp fresh)
 
-freshLabel :: GenM FIR.Label
+freshLabel :: GenM Label
 freshLabel = do
   st <- get
   let fresh = lastLabel st + 1
@@ -194,23 +194,28 @@ example1 =
       )
   ]
 
+newIdentLoc :: Ident -> VType -> GenM Loc
+newIdentLoc idt vtp = do
+  let loc = LAddr vtp (Var idt 0)
+  modify (\st -> st {locs = M.insert idt loc (locs st)})
+  return loc
+
 genStmts :: [Stmt] -> GenM ()
 genStmts [] = emit $ Br (LLabel Nothing)
 genStmts (Decl _ tp items : t) = do
   mapM_ declareItem items
   genStmts t
   where
+    vtp :: VType
+    vtp = toVType tp
     declareItem :: Item -> GenM ()
     declareItem (NoInit _ idt) = do
-      -- TODO extend for bool and string
-      let vloc = LAddr VInt (Var idt 0)
-      modify (\st -> st {locs = M.insert idt vloc (locs st)})
-      emit $ Unar Asgn vloc (LImmInt 0)
+      iloc <- newIdentLoc idt vtp
+      emit $ Unar Asgn iloc (initValue vtp)
     declareItem (Init _ idt e) = do
+      iloc <- newIdentLoc idt vtp
       loc <- genExp e
-      let vloc = LAddr VInt (Var idt 0)
-      modify (\st -> st {locs = M.insert idt vloc (locs st)})
-      emit $ Unar Asgn vloc loc
+      emit $ Unar Asgn iloc loc
 genStmts (Ass _ idt e : t) = do
   loc <- genExp e
   let vloc = LAddr VInt (Var idt 0)
@@ -254,28 +259,34 @@ genStmts (BStmt _ b : t) = error "should never happen"
 setLabels :: Instr -> Instr
 setLabels (Bin CondBr _ (LLabel Nothing) (LLabel Nothing)) = error "should never happen"
 
-runGenM :: GenM a -> (a, Store)
+runGenM :: GenM a -> (a, FIRStore)
 runGenM m = runState m initStore
   where
     initStore =
-      Store_
+      FIRStore_
         { lastLabel = 0,
           lastTemp = 0,
           code = [],
           locs = M.empty
         }
 
+withJumpLabel :: BB' Code -> BB' Code
+withJumpLabel bb =
+  bb
+    { stmts =
+        ( case h of
+            Bin CondBr loc (LLabel Nothing) (LLabel Nothing) -> Bin CondBr loc (LLabel $ succTrue bb) (LLabel $ succFalse bb)
+            Br (LLabel Nothing) -> Br (LLabel $ succDone bb)
+            _else -> h
+        )
+          : t
+    }
+  where
+    h : t = stmts bb
+
 genFIR :: BB' [Stmt] -> BB' Code
 genFIR bb =
   let (_, st) = runGenM $ genStmts (reverse (stmts bb))
-   in bb {stmts = withJumpLabel $ code st}
-  where
-    withJumpLabel :: Code -> Code
-    withJumpLabel cd =
-      let h : t = cd
-       in ( case h of
-              Bin CondBr loc (LLabel Nothing) (LLabel Nothing) -> Bin CondBr loc (LLabel $ succTrue bb) (LLabel $ succFalse bb)
-              Br (LLabel Nothing) -> Br (LLabel $ succDone bb)
-              _else -> h
-          )
-            : t
+   in withJumpLabel $ bb {stmts = code st}
+
+
