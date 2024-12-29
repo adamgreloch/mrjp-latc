@@ -468,7 +468,9 @@ typeCheckStmts stmts = do
 
 typeCheckStmt :: Stmt -> TC Ret
 typeCheckStmt (Empty _) = asks Left
-typeCheckStmt (BStmt _ b) = typeCheckBlock b
+typeCheckStmt (BStmt _ b) = do 
+  _ <- typeCheckBlock b
+  asks Left
 typeCheckStmt (Decl p tp items) = Left <$> readerSeq (expectItemType p tp) items
 typeCheckStmt (Ass p idt e) = typeCheckExpr e >>= expectIdentType p idt . getType
 typeCheckStmt (Incr p idt) = expectIdentType p idt (Int p)
