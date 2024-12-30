@@ -332,22 +332,25 @@ procBlock (Block _ stmts) = do
   return ()
 
 procTopDef :: TopDef -> CFGM ()
-procTopDef (FnDef _ _ fnname _ block) = do
-  -- TODO process args
+procTopDef (FnDef _ _ fnname args block) = do
   modify (\st -> st {cfgs = M.insert fnname M.empty (cfgs st)})
   lab <- freshLabel
-  local
-    ( const $
+  let env =
         Env
           { currLabel = lab,
             currFn = fnname,
             currBindings = M.empty
           }
-    )
+  env' <- local (const env) $ readerSeq bindArgs args
+  local
+    (const env')
     ( do
         addEntryEdgeTo lab fnname
         procBlock block
     )
+  where
+    bindArgs :: Arg -> CFGM Env
+    bindArgs (Arg _ tp idt) = addBinding idt tp
 
 procProgram :: Program -> CFGM ()
 procProgram (Program _ topdefs) =
