@@ -201,19 +201,30 @@ withJumpLabel bb =
         }
     [] -> error "tried setting labels in empty bb?"
 
-genFIR :: CFGInfo -> BB' [Stmt] -> BB' Code
-genFIR info bb =
-  let (_, st) = runState m initStore
-   in withJumpLabel $ bb {stmts = code st}
+genBB :: BB' [Stmt] -> GenM (BB' Code)
+genBB bb = do
+  -- FIXME move to Env?
+  modify (\st -> st {blockBindings = bindings bb})
+  genStmts (reverse (stmts bb))
+  stmts <- takeCode
+  return $ withJumpLabel $ bb {stmts}
+
+genCFGs :: CFGsNoDefs' [Stmt] -> GenM (CFGsNoDefs' Code)
+genCFGs = mapM $ mapM genBB
+
+genFIR :: CFGs' [Stmt] -> CFGs' Code
+genFIR (cfgs, info) =
+  let (cfgs', _) = runState m initStore
+   in (cfgs', info)
   where
-    m = genStmts (reverse (stmts bb))
+    m = genCFGs cfgs
     initStore =
       FIRStore_
         { lastLabel = 0,
           lastTemp = 0,
           code = [],
           locs = M.empty,
-          blockBindings = bindings bb,
+          blockBindings = M.empty,
           globalBindings = cfgInfoBindings info,
           defs = cfgInfoDefs info
         }

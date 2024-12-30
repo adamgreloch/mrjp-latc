@@ -1,10 +1,6 @@
-module SSA (toFIRCFGs) where
+module SSA () where
 
 import CFG
 import FIR
 import TransformAbsToFIR
 
-type FIRCFGs = CFGs' [Instr]
-
-toFIRCFGs :: CFGs -> FIRCFGs
-toFIRCFGs = mapTo genFIR

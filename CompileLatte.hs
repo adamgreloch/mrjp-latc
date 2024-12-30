@@ -42,6 +42,7 @@ import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
 import TypeCheckLatte
 import Prelude hiding (lookup)
+import TransformAbsToFIR (genFIR)
 
 type Err = Either String
 
@@ -374,7 +375,7 @@ compileProgram v tree = do
   -- putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
   cfgs <- genCFGs tcinfo tree
   putStrV v $ "[CFGs]\n" ++ show cfgs
-  let fircfgs = toFIRCFGs cfgs
+  let fircfgs = genFIR cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
   when (v == 1) $ putStrLn $ toDot cfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
