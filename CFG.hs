@@ -13,6 +13,7 @@ where
 import AbsLatte
 import CFGDefs
 import Common
+import Control.Exception (assert)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
     Reader,
@@ -207,28 +208,30 @@ endCurrBlock = do
 
   return currLab
 
-procStmts :: [Stmt] -> CFGM (Env, [Label])
+procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
   currLab <- endCurrBlock
   env <- ask
-  return (env, [currLab])
+  return [currLab]
 procStmts (stmt : t) =
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
       -- handled by cond flow already
+
+      -- We create a new block only for the sake of easier handling
+      -- of variable shadowing in the new block. The block is temporary
+      -- and is merged later with currLab
       currLab <- endCurrBlock
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenDone
-      (_, retLabs) <- local (withLabel lab1) $ procStmts stmts
+
+      retLabs <- local (withLabel lab1) $ procStmts stmts
 
       lab2 <- freshLabel
-      addEdgesFromTo retLabs lab2 WhenDone
 
-      -- TODO merge labels as BStmts can be inlined, we only care about
-      -- proper variable management
-      -- mergeLabels currLab lab1
-      -- mergeLabels lab1 lab2
+      addEdgesFromTo (assert (length retLabs <= 1) retLabs) lab2 WhenDone
+      mergeLabels currLab lab1
       local (withLabel lab2) $ procStmts t
     (Ret _ _) -> handleRets stmt
     (VRet _) -> handleRets stmt
@@ -238,7 +241,7 @@ procStmts (stmt : t) =
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      (_, retLabs) <- local (withLabel lab1) $ procStmts [inner]
+      retLabs <- local (withLabel lab1) $ procStmts [inner]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
@@ -250,11 +253,11 @@ procStmts (stmt : t) =
 
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenTrue
-      (_, retLabsTrue) <- local (withLabel lab1) $ procStmts [innerTrue]
+      retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
 
       lab2 <- freshLabel
       addEdgeFromTo currLab lab2 WhenFalse
-      (_, retLabsFalse) <- local (withLabel lab2) $ procStmts [innerFalse]
+      retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
 
       lab3 <- freshLabel
       addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
@@ -275,7 +278,7 @@ procStmts (stmt : t) =
 
       lab2 <- freshLabel
       addEdgeFromTo lab1 lab2 WhenTrue
-      (_, retLabsDone) <- local (withLabel lab2) $ procStmts [loopBody]
+      retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
 
       addEdgesFromTo retLabsDone lab1 WhenDone
 
@@ -294,21 +297,24 @@ procStmts (stmt : t) =
       addStmtToCurrBlock stmt
       procStmts t
   where
-    handleRets :: Stmt -> CFGM (Env, [Label])
+    handleRets :: Stmt -> CFGM [Label]
     handleRets s = do
       addStmtToCurrBlock s
       currLab <- endCurrBlock
       addRetEdgeFrom currLab WhenDone
       env <- ask
-      return (env, [])
+      return []
 
 addBinding :: Ident -> Type -> CFGM Env
 addBinding idt tp = do
   sloc <- newSLoc
   currLab <- asks currLabel
-  modify (\st -> st
+  modify
+    ( \st ->
+        st
           { cfgDefs = M.insert sloc (tp, currLab) (cfgDefs st)
-          })
+          }
+    )
   env <- ask
   return env {currBindings = M.insert idt sloc (currBindings env)}
 
