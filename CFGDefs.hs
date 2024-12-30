@@ -1,6 +1,6 @@
 module CFGDefs where
 
-import AbsLatte (Ident (..), Stmt, Type)
+import AbsLatte (Ident (..), Type)
 import Data.List (find)
 import Data.Map qualified as M
 
@@ -43,11 +43,15 @@ type CFGsNoDefs' a = M.Map Ident (CFG' a)
 type CFGs' a = (CFGsNoDefs' a, Defs)
 
 succWhen :: When -> BB' a -> Maybe Label
-succWhen when bb = (\(FnBlock l, b) -> Just l) =<< find isBlock (succs bb)
+succWhen when bb = extractLabel =<< find isBlock (succs bb)
   where
     isBlock :: (Node, When) -> Bool
     isBlock (FnBlock _, w) = w == when
     isBlock _ = False
+
+    extractLabel :: (Node, When) -> Maybe Label
+    extractLabel (FnBlock l, _) = Just l
+    extractLabel nw = error $ "FnBlock expected but got: " ++ show nw
 
 succDone :: BB' a -> Maybe Label
 succDone = succWhen WhenDone

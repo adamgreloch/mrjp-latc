@@ -10,7 +10,6 @@ import Control.Monad.State
     modify,
   )
 import Data.Map (Map)
-import Data.Map qualified as M
 
 data VType = VInt | VStr | VBool | VVoid deriving (Eq)
 
@@ -34,8 +33,6 @@ data Loc
     LImmBool Bool
   | -- | address of a temporary register (i.e. LAddr 1 ~> %loc_i)
     LAddr VType Addr
-  | -- | current function argument (i.e. LArg "foo" ~> %arg_foo)
-    LArg VType String
   | LLabel (Maybe Label)
   | LString String
 
@@ -44,13 +41,16 @@ instance Show Loc where
   show (LImmBool b) = show b
   show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
   show (LLabel lab) = "%L" ++ maybe "?" show lab
+  show (LString s) = '\"' : s ++ "\""
 
 typeOfLoc :: Loc -> VType
 typeOfLoc l = case l of
   (LImmInt _) -> VInt
   (LImmBool _) -> VBool
   (LAddr tp _) -> tp
-  (LArg tp _) -> tp
+  (LString _) -> VStr
+  (LLabel _) -> error "request type of label?"
+
 
 toVType :: Type -> VType
 toVType tp =
@@ -80,6 +80,7 @@ instance Printable Code where
         instr -> show instr
     )
       ++ if null t then "" else "\n" ++ printCode t
+  printCode [] = ""
 
 data TopDefFIR = FnDefFIR String Code
 

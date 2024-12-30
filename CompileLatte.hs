@@ -40,7 +40,6 @@ import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
-import TransformAbsToFIR
 import TypeCheckLatte
 import Prelude hiding (lookup)
 

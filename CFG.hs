@@ -1,3 +1,5 @@
+{-# LANGUAGE StrictData #-}
+
 module CFG
   ( genCFGs,
     toDot,
@@ -30,9 +32,6 @@ import Control.Monad.State
 import Data.Bifunctor qualified
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
-import FIR
-import PrintLatte (printTree)
-import TransformAbsToFIR
 
 type BB = BB' [Stmt]
 
@@ -73,9 +72,6 @@ emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.emp
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
-
-withLabelAndEnv :: Label -> Env -> Env
-withLabelAndEnv lab env = env {currLabel = lab}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -211,7 +207,6 @@ endCurrBlock = do
 procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
   currLab <- endCurrBlock
-  env <- ask
   return [currLab]
 procStmts (stmt : t) =
   case stmt of
@@ -285,7 +280,7 @@ procStmts (stmt : t) =
       lab3 <- freshLabel
       addEdgeFromTo lab1 lab3 WhenFalse
       local (withLabel lab3) $ procStmts t
-    (Decl p tp items) -> do
+    (Decl _ tp items) -> do
       env' <- readerSeq declareItem items
       addStmtToCurrBlock stmt
       local (const env') $ procStmts t
@@ -302,7 +297,6 @@ procStmts (stmt : t) =
       addStmtToCurrBlock s
       currLab <- endCurrBlock
       addRetEdgeFrom currLab WhenDone
-      env <- ask
       return []
 
 addBinding :: Ident -> Type -> CFGM Env
@@ -320,11 +314,6 @@ addBinding idt tp = do
 
 newSLoc :: CFGM SLoc
 newSLoc = gets (M.size . cfgDefs)
-
-renameIdent :: Ident -> CFGM Ident
-renameIdent idt@(Ident s) = do
-  currLab <- asks currLabel
-  return (Ident $ s ++ show currLab)
 
 procBlock :: Block -> CFGM ()
 procBlock (Block _ stmts) = do
@@ -377,16 +366,6 @@ genCFGs :: Program -> CFGs
 genCFGs p =
   let (_, st) = runCFGM (procProgram p)
    in (cfgs st, cfgDefs st)
-
-instance Printable [Stmt] where
-  printCode (s : t) =
-    ( case s of
-        (While _ e _) -> "while (" ++ printTree e ++ ") {...}"
-        (Cond _ e _) -> "if (" ++ printTree e ++ ") {...}"
-        (CondElse _ e _ _) -> "if (" ++ printTree e ++ ") {...} else {...}"
-        stmt -> printTree stmt
-    )
-      ++ if null t then "" else "\n" ++ printCode t
 
 printableToDot :: (Printable [a]) => [a] -> String
 printableToDot s =
