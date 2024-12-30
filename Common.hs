@@ -16,7 +16,7 @@ readerSeq mf (h : t) = do
   local (const env) (readerSeq mf t)
 readerSeq _ [] = ask
 
-readerEitherSeq :: (MonadReader r m) => (a -> m (Either r l)) -> [a] -> m (Either r l)
+readerEitherSeq :: (MonadReader l m) => (a -> m (Either l r)) -> [a] -> m (Either l r)
 readerEitherSeq mf (h : t) = do
   res <- mf h
   case res of

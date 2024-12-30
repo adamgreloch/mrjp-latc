@@ -5,6 +5,7 @@
 module TypeCheckLatte (typeCheckProgram) where
 
 import AbsLatte
+import Common
 import Control.Monad (when)
 import Control.Monad.Except
   ( ExceptT,
@@ -18,7 +19,6 @@ import Control.Monad.Reader
     asks,
     runReader,
   )
-import Data.Either (isLeft)
 import Data.List (nubBy)
 import Data.Map (Map)
 import Data.Map qualified as M
@@ -27,7 +27,6 @@ import Helper
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
 import Prelude hiding (lookup)
-import Common
 
 type TypeError = TypeError' BNFC'Position
 
@@ -163,7 +162,19 @@ instance HasPosition (VPType' BNFC'Position) where
 -- TODO make this tuple a datatype
 type TEnv = (Ident, Type, BNFC'Position, Map Ident VPType)
 
-type Ret = Either TEnv Type
+data Ret = Done TEnv | Returned Type
+
+isDone :: Ret -> Bool
+isDone (Done _) = True
+isDone _ = False
+
+readerRetSeq :: (MonadReader TEnv m) => (a -> m Ret) -> [a] -> m Ret
+readerRetSeq mf (h : t) = do
+  res <- mf h
+  case res of
+    (Done l) -> local (const l) (readerRetSeq mf t)
+    (Returned r) -> return (Returned r)
+readerRetSeq _ [] = asks Done
 
 data Value = IntV Integer | StrV String | BoolV Bool | VoidV deriving (Show)
 
@@ -375,7 +386,7 @@ expectIdentType p idt extp = do
   case lookup idt env of
     (Just (TVar _ tp)) ->
       if extp ~ tp
-        then asks Left
+        then asks Done
         else throwError (TypeMismatch tp extp)
     (Just (TFn p' _ _)) -> throwError (FnUsedAsVar p idt p')
     Nothing -> throwError (UndefinedVar p idt)
@@ -385,7 +396,7 @@ verifyNextRetType tp = do
   env <- ask
   let extp = nextRetType env
   if extp ~ tp
-    then return (Right tp)
+    then return (Returned tp)
     else throwError (RetTypeMismatch tp extp)
 
 typeCheckProgram :: Int -> Program -> IO ()
@@ -427,7 +438,7 @@ typeCheckFnDef fnd@(FnDef p expret fn args b) = do
     else do
       env <- ask -- Assumes FnDef is already in the env
       ret <- local (const $ setRetType expret $ addArgsToTEnv env) (typeCheckBlock b)
-      if isLeft ret && not (expret ~ Void BNFC'NoPosition)
+      if isDone ret && not (expret ~ Void BNFC'NoPosition)
         then throwError (NoReturnError p fn)
         else return env -- Assumes typeCheckBlock already checked all the return types
   where
@@ -462,16 +473,18 @@ typeCheckBlock (Block p stmts) =
 
 typeCheckStmts :: [Stmt] -> TC Ret
 typeCheckStmts stmts = do
-  readerEitherSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
+  readerRetSeq (\st -> catchError (typeCheckStmt st) (handler st)) stmts
   where
     handler stmt err = throwError (StmtError stmt err)
 
 typeCheckStmt :: Stmt -> TC Ret
-typeCheckStmt (Empty _) = asks Left
-typeCheckStmt (BStmt _ b) = do 
-  _ <- typeCheckBlock b
-  asks Left
-typeCheckStmt (Decl p tp items) = Left <$> readerSeq (expectItemType p tp) items
+typeCheckStmt (Empty _) = asks Done
+typeCheckStmt (BStmt _ b) = do
+  ret <- typeCheckBlock b
+  case ret of
+    (Done _) -> asks Done -- Ignore blocks env
+    r@(Returned _) -> return r
+typeCheckStmt (Decl p tp items) = Done <$> readerSeq (expectItemType p tp) items
 typeCheckStmt (Ass p idt e) = typeCheckExpr e >>= expectIdentType p idt . getType
 typeCheckStmt (Incr p idt) = expectIdentType p idt (Int p)
 typeCheckStmt (Decr p idt) = expectIdentType p idt (Int p)
@@ -482,7 +495,7 @@ typeCheckStmt (Cond p be s) = do
   ret <- typeCheckStmt s
   case ctp of
     (Const _ (BoolV True)) -> return ret
-    _else -> asks Left
+    _else -> asks Done
 typeCheckStmt (CondElse p be s1 s2) = do
   ctp <- expectType (Bool p) be
   ret1 <- typeCheckStmt s1
@@ -494,12 +507,12 @@ typeCheckStmt (CondElse p be s1 s2) = do
         else return ret2
     _else ->
       ( case (ret1, ret2) of
-          (Right a, Right b) | a ~ b -> return ret1
-          _else -> asks Left
+          (Returned a, Returned b) | a ~ b -> return ret1
+          _else -> asks Done
       )
 typeCheckStmt (While p be s) = do
   _ <- expectType (Bool p) be
   typeCheckStmt s
 typeCheckStmt (SExp _ e) = do
   _ <- typeCheckExpr e
-  asks Left
+  asks Done
