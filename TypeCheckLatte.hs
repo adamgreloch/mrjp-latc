@@ -2,9 +2,10 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
-module TypeCheckLatte (typeCheckProgram) where
+module TypeCheckLatte (typeCheckProgram, TypeCheckInfo(..)) where
 
 import AbsLatte
+import CFGDefs (Bindings, Def (..), Defs)
 import Common
 import Control.Monad (when)
 import Control.Monad.Except
@@ -159,8 +160,13 @@ instance HasPosition (VPType' BNFC'Position) where
     TVar p _ -> p
     TFn p _ _ -> p
 
--- TODO make this tuple a datatype
-type TEnv = (Ident, Type, BNFC'Position, Map Ident VPType)
+data TEnv = TEnv
+  { fnIdt :: Ident,
+    fnRet :: Type,
+    blockPos :: BNFC'Position,
+    mp :: Map Ident VPType
+  }
+  deriving (Show)
 
 data Ret = Done TEnv | Returned Type
 
@@ -184,43 +190,44 @@ type ConstOrVarType = ExprType' BNFC'Position
 -- to one, the ExprType will be a Const. Otherwise, it is a Var
 data ExprType' a = Const a Value | Var (Type' a)
 
+data TypeCheckInfo = TypeCheckInfo
+  { globalDefs :: Defs,
+    globalBindings :: Bindings
+  }
+
 initTEnv :: TEnv
 initTEnv =
-  ( Ident "main",
-    Void nop,
-    BNFC'NoPosition,
-    foldr
-      addPredefinedFun
-      M.empty
-      [ ("printString", Void nop, [Arg nop (Str nop) (Ident "v")]),
-        ("printInt", Void nop, [Arg nop (Int nop) (Ident "v")]),
-        ("error", Void nop, []),
-        ("readInt", Int nop, []),
-        ("readString", Str nop, [])
-      ]
-  )
+  TEnv
+    { fnIdt = Ident "main",
+      fnRet = Void nop,
+      blockPos = BNFC'NoPosition,
+      mp =
+        foldr
+          addPredefinedFun
+          M.empty
+          [ ("printString", Void nop, [Arg nop (Str nop) (Ident "v")]),
+            ("printInt", Void nop, [Arg nop (Int nop) (Ident "v")]),
+            ("error", Void nop, []),
+            ("readInt", Int nop, []),
+            ("readString", Str nop, [])
+          ]
+    }
   where
     addPredefinedFun :: (String, Type, [Arg]) -> Map Ident VPType -> Map Ident VPType
     addPredefinedFun (fnname, ret, args) = M.insert (Ident fnname) (TFn nop ret args)
     nop = BNFC'NoPosition
 
 lookup :: Ident -> TEnv -> Maybe VPType
-lookup idt (_, _, _, mp) = M.lookup idt mp
+lookup idt tenv = M.lookup idt (mp tenv)
 
 insert :: Ident -> VPType -> TEnv -> TEnv
-insert idt vpt (fnidt, ret, bp, mp) = (fnidt, ret, bp, M.insert idt vpt mp)
+insert idt vpt tenv = tenv {mp = M.insert idt vpt (mp tenv)}
 
 setRetType :: Type -> TEnv -> TEnv
-setRetType ret (fnidt, _, bp, mp) = (fnidt, ret, bp, mp)
+setRetType fnRet tenv = tenv {fnRet}
 
 setBlockPos :: BNFC'Position -> TEnv -> TEnv
-setBlockPos bp (fnidt, ret, _, mp) = (fnidt, ret, bp, mp)
-
-blockPos :: TEnv -> BNFC'Position
-blockPos (_, _, bp, _) = bp
-
-nextRetType :: TEnv -> Type
-nextRetType (_, ret, _, _) = ret
+setBlockPos blockPos tenv = tenv {blockPos}
 
 instance Show TypeError where
   show (NoReturnError p fn) = "no return from function " ++ show fn ++ " found while expected from its signature at " ++ at p
@@ -394,12 +401,37 @@ expectIdentType p idt extp = do
 verifyNextRetType :: Type -> TC Ret
 verifyNextRetType tp = do
   env <- ask
-  let extp = nextRetType env
+  let extp = fnRet env
   if extp ~ tp
     then return (Returned tp)
     else throwError (RetTypeMismatch tp extp)
 
-typeCheckProgram :: Int -> Program -> IO ()
+-- | Translates global mappings found during typechecking to a type
+-- understandable by the backend
+envToTypeCheckInfo :: TEnv -> TypeCheckInfo
+envToTypeCheckInfo tenv = do
+  foldr
+    addVPTypeToInfo
+    ( TypeCheckInfo
+        { globalBindings = M.empty,
+          globalDefs = M.empty
+        }
+    )
+    (M.toList (mp tenv))
+  where
+    addVPTypeToInfo :: (Ident, VPType) -> TypeCheckInfo -> TypeCheckInfo
+    addVPTypeToInfo (idt, vpt) tc =
+      tc
+        { globalBindings = M.insert idt sloc (globalBindings tc),
+          globalDefs = M.insert sloc dtp (globalDefs tc)
+        }
+      where
+        sloc = M.size (globalBindings tc)
+        dtp = case vpt of
+          TVar _ tp -> DVar tp 0
+          TFn _ tp _ -> DFun tp
+
+typeCheckProgram :: Int -> Program -> IO TypeCheckInfo
 typeCheckProgram v (Program _ tds) = do
   putStrV v "\n[Type check]\n"
   case runReader (runExceptT (typeCheckTopDefs tds)) initTEnv of
@@ -409,6 +441,7 @@ typeCheckProgram v (Program _ tds) = do
     (Right tenv) -> do
       when (v > 2) $ hPutStrLn stderr "OK\n"
       putStrV v (show tenv)
+      return $ envToTypeCheckInfo tenv
 
 unique :: [Arg] -> Bool
 unique args = length args == length (nubBy eq args)

@@ -370,9 +370,9 @@ compileProgram :: Int -> Program -> IO ()
 compileProgram v tree = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
-  typeCheckProgram v tree
+  tcinfo <- typeCheckProgram v tree
   -- putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
-  let cfgs = genCFGs tree
+  cfgs <- genCFGs tcinfo tree
   putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = toFIRCFGs cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs

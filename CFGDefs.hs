@@ -25,7 +25,9 @@ instance Show Node where
 
 type Bindings = M.Map Ident SLoc
 
-type Defs = M.Map SLoc (Type, Label)
+data Def = DVar Type Label | DFun Type deriving (Show)
+
+type Defs = M.Map SLoc Def
 
 data BB' a = BB'
   { label :: Label,
@@ -40,7 +42,12 @@ type CFG' a = M.Map Label (BB' a)
 
 type CFGsNoDefs' a = M.Map Ident (CFG' a)
 
-type CFGs' a = (CFGsNoDefs' a, Defs)
+data CFGInfo = CFGInfo
+  { cfgInfoBindings :: Bindings,
+    cfgInfoDefs :: Defs
+  } deriving (Show)
+
+type CFGs' a = (CFGsNoDefs' a, CFGInfo)
 
 succWhen :: When -> BB' a -> Maybe Label
 succWhen when bb = extractLabel =<< find isBlock (succs bb)

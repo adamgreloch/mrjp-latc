@@ -23,14 +23,14 @@ freshTemp = do
   return (Temp fresh)
 
 genExp :: Expr -> GenM Loc
-genExp (EVar _ idt) = getLocFromBinding idt
+genExp (EVar _ idt) = getVarLocFromBinding idt
 genExp (ELitInt _ n) = return (LImmInt (fromIntegral n))
 genExp (ELitTrue _) = return (LImmBool True)
 genExp (ELitFalse _) = return (LImmBool False)
 genExp (EApp _ idt exprs) = do
   tmp <- freshTemp
-  -- TODO extend for other types
-  let resLoc = LAddr VInt tmp
+  tp <- getFnRetTypeFromBinding idt
+  let resLoc = LAddr tp tmp
   locs <- mapM genExp exprs
   emit $ Call resLoc idt locs
   return resLoc
@@ -105,13 +105,27 @@ genExp (EOr _ e1 e2) = do
   emit $ Bin Or resLoc loc1 loc2
   return resLoc
 
-getLocFromBinding :: Ident -> GenM Loc
-getLocFromBinding idt = do
+-- TODO cleanup these accessors
+getVarLocFromBinding :: Ident -> GenM Loc
+getVarLocFromBinding idt = do
   st <- get
   case M.lookup idt (blockBindings st) of
     Just sloc ->
       case M.lookup sloc (defs st) of
-        Just (tp, lab) -> return (LAddr (toVType tp) (Var idt lab))
+        Just (DVar tp lab) -> return (LAddr (toVType tp) (Var idt lab))
+        Just (DFun _) -> error "tried getting fun loc"
+        Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
+    Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
+
+getFnRetTypeFromBinding :: Ident -> GenM VType
+getFnRetTypeFromBinding idt = do
+  st <- get
+  -- NOTE: valid only when fn declarations cannot be nested
+  case M.lookup idt (globalBindings st) of
+    Just sloc ->
+      case M.lookup sloc (defs st) of
+        Just (DFun tp) -> return $ toVType tp
+        Just (DVar {}) -> error "var instead of fun"
         Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
 
@@ -126,15 +140,15 @@ genStmts (Decl _ tp items : t) = do
     vtp = toVType tp
     declareItem :: Item -> GenM ()
     declareItem (NoInit _ idt) = do
-      iloc <- getLocFromBinding idt
+      iloc <- getVarLocFromBinding idt
       emit $ Unar Asgn iloc (initValue vtp)
     declareItem (Init _ idt e) = do
-      iloc <- getLocFromBinding idt
+      iloc <- getVarLocFromBinding idt
       loc <- genExp e
       emit $ Unar Asgn iloc loc
 genStmts (Ass _ idt e : t) = do
   loc <- genExp e
-  vloc <- getLocFromBinding idt
+  vloc <- getVarLocFromBinding idt
   modify (\st -> st {locs = M.insert idt vloc (locs st)})
   emit $ Unar Asgn vloc loc
   genStmts t
@@ -175,19 +189,20 @@ genStmts (BStmt _ _ : _) = error "should never happen"
 withJumpLabel :: BB' Code -> BB' Code
 withJumpLabel bb =
   case stmts bb of
-    h : t -> bb
-      { stmts =
-          ( case h of
-              Bin CondBr loc (LLabel Nothing) (LLabel Nothing) -> Bin CondBr loc (LLabel $ succTrue bb) (LLabel $ succFalse bb)
-              Br (LLabel Nothing) -> Br (LLabel $ succDone bb)
-              _else -> h
-          )
-            : t
-      }
+    h : t ->
+      bb
+        { stmts =
+            ( case h of
+                Bin CondBr loc (LLabel Nothing) (LLabel Nothing) -> Bin CondBr loc (LLabel $ succTrue bb) (LLabel $ succFalse bb)
+                Br (LLabel Nothing) -> Br (LLabel $ succDone bb)
+                _else -> h
+            )
+              : t
+        }
     [] -> error "tried setting labels in empty bb?"
 
-genFIR :: Defs -> BB' [Stmt] -> BB' Code
-genFIR defs bb =
+genFIR :: CFGInfo -> BB' [Stmt] -> BB' Code
+genFIR info bb =
   let (_, st) = runState m initStore
    in withJumpLabel $ bb {stmts = code st}
   where
@@ -199,5 +214,6 @@ genFIR defs bb =
           code = [],
           locs = M.empty,
           blockBindings = bindings bb,
-          defs
+          globalBindings = cfgInfoBindings info,
+          defs = cfgInfoDefs info
         }

@@ -16,11 +16,13 @@ import AbsLatte
 import CFGDefs
 import Common
 import Control.Exception (assert)
+import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
-    Reader,
+    ReaderT,
     asks,
-    runReader,
+    runReaderT,
   )
 import Control.Monad.State
   ( MonadState (get, put),
@@ -32,6 +34,9 @@ import Control.Monad.State
 import Data.Bifunctor qualified
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
+import GHC.IO.Handle.FD (stderr)
+import System.IO (hPutStrLn)
+import TypeCheckLatte (TypeCheckInfo (..))
 
 type BB = BB' [Stmt]
 
@@ -55,7 +60,10 @@ data Env = Env
     currBindings :: Bindings
   }
 
-type CFGM a = StateT Store (Reader Env) a
+type CFGM a = StateT Store (ReaderT Env IO) a
+
+debugPrint :: String -> CFGM ()
+debugPrint s = when True $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
 
 freshLabel :: CFGM Label
 freshLabel = do
@@ -199,6 +207,12 @@ endCurrBlock = do
   currStmts <- takeCurrStmts
   putStmtsToBB currLab currStmts
 
+  debugPrint $
+    "endCurrBlock currLab="
+      ++ show currLab
+      ++ " currStmts:\n"
+      ++ printCode currStmts
+
   currBdgs <- asks currBindings
   putBindingsToBB currLab currBdgs
 
@@ -208,7 +222,9 @@ procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
   currLab <- endCurrBlock
   return [currLab]
-procStmts (stmt : t) =
+procStmts (stmt : t) = do
+  currLab_ <- asks currLabel
+  debugPrint $ "procStmts currLab=" ++ show currLab_ ++ " stmts:\n" ++ printCode [stmt]
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
@@ -223,11 +239,17 @@ procStmts (stmt : t) =
 
       retLabs <- local (withLabel lab1) $ procStmts stmts
 
-      lab2 <- freshLabel
+      if null retLabs
+        then return []
+        else do
+          lab2 <- freshLabel
 
-      addEdgesFromTo (assert (length retLabs <= 1) retLabs) lab2 WhenDone
-      mergeLabels currLab lab1
-      local (withLabel lab2) $ procStmts t
+          addEdgesFromTo (assert (length retLabs <= 1) retLabs) lab2 WhenDone
+
+          -- TODO defer this optimalization post FIR:
+          -- mergeLabels currLab lab1
+
+          local (withLabel lab2) $ procStmts t
     (Ret _ _) -> handleRets stmt
     (VRet _) -> handleRets stmt
     (Cond _ _ inner) -> do
@@ -254,9 +276,14 @@ procStmts (stmt : t) =
       addEdgeFromTo currLab lab2 WhenFalse
       retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
 
-      lab3 <- freshLabel
-      addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
-      local (withLabel lab3) $ procStmts t
+      let retLabs = retLabsTrue ++ retLabsFalse
+      debugPrint $ "CondElse retLabs=" ++ show retLabs
+      if null retLabs
+        then return []
+        else do
+          lab3 <- freshLabel
+          addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
+          local (withLabel lab3) $ procStmts t
     (While _ _ loopBody) -> do
       currLab <- endCurrBlock
 
@@ -303,10 +330,11 @@ addBinding :: Ident -> Type -> CFGM Env
 addBinding idt tp = do
   sloc <- newSLoc
   currLab <- asks currLabel
+  debugPrint $ "addBinding " ++ show idt ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")"
   modify
     ( \st ->
         st
-          { cfgDefs = M.insert sloc (tp, currLab) (cfgDefs st)
+          { cfgDefs = M.insert sloc (DVar tp currLab) (cfgDefs st)
           }
     )
   env <- ask
@@ -345,27 +373,33 @@ procProgram :: Program -> CFGM ()
 procProgram (Program _ topdefs) =
   mapM_ procTopDef topdefs
 
-runCFGM :: CFGM a -> (a, Store)
-runCFGM m = runReader (runStateT m initStore) initLabel
+runCFGM :: TypeCheckInfo -> CFGM a -> IO (a, Store)
+runCFGM tcinfo m = runReaderT (runStateT m initStore) initLabel
   where
     initStore =
       Store
         { cfgs = M.empty,
           currStmts = [],
           CFG.lastLabel = 0,
-          cfgDefs = M.empty
+          cfgDefs = globalDefs tcinfo
         }
     initLabel =
       Env
         { currFn = Ident "??",
           currLabel = 0,
-          currBindings = M.empty
+          currBindings = globalBindings tcinfo
         }
 
-genCFGs :: Program -> CFGs
-genCFGs p =
-  let (_, st) = runCFGM (procProgram p)
-   in (cfgs st, cfgDefs st)
+genCFGs :: TypeCheckInfo -> Program -> IO CFGs
+genCFGs tcinfo p = do
+  (_, st) <- runCFGM tcinfo (procProgram p)
+  return
+    ( cfgs st,
+      CFGInfo
+        { cfgInfoDefs = cfgDefs st,
+          cfgInfoBindings = globalBindings tcinfo
+        }
+    )
 
 printableToDot :: (Printable [a]) => [a] -> String
 printableToDot s =
@@ -424,5 +458,5 @@ toDot (cfgs, _) =
     ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
     ++ "}"
 
-mapTo :: (Defs -> BB' a -> BB' b) -> CFGs' a -> CFGs' b
-mapTo f (cfgs, defs) = (M.map (M.map (f defs)) cfgs, defs)
+mapTo :: (CFGInfo -> BB' a -> BB' b) -> CFGs' a -> CFGs' b
+mapTo f (cfgs, info) = (M.map (M.map (f info)) cfgs, info)

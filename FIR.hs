@@ -96,6 +96,7 @@ data FIRStore = FIRStore_
     lastTemp :: Int,
     lastLabel :: Label,
     blockBindings :: Bindings,
+    globalBindings :: Bindings,
     defs :: Defs
   }
   deriving (Show)
