@@ -3,7 +3,7 @@ module SSA (toSSA) where
 import AbsLatte (Ident (Ident))
 import CFG
 import CFGDefs
-import Control.Monad (unless, when)
+import Control.Monad (foldM, foldM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
@@ -50,11 +50,44 @@ data Store = Store
     lastDefNumInBlock :: Map VarID (Map Label Int),
     lastDefNum :: Map VarID Int,
     cfgs :: CFGsNoDefs' Code,
-    beenIn :: Map Label (Int, Code)
+    beenIn :: Map Label (Int, Code),
+    phis :: Map Label (Map VarID (Int, Map Label Expr))
   }
   deriving (Show)
 
 type GenM a = StateT Store (ReaderT Env IO) a
+
+initPhi :: VarID -> Int -> GenM ()
+initPhi vi num = do
+  st <- get
+  currLab <- asks currLabel
+  let map = M.findWithDefault M.empty currLab (phis st)
+  let map' = M.insert vi (num, M.empty) map
+  let phis' = M.insert currLab map' (phis st)
+  put (st {phis = phis'})
+
+-- TODO clean this up some day
+writeToPhis :: VarID -> Label -> Expr -> GenM ()
+writeToPhis vi predLab e = do
+  st <- get
+  currLab <- asks currLabel
+  let map = M.findWithDefault M.empty currLab (phis st)
+  case M.lookup vi map of
+    Nothing -> error "phi not inited"
+    Just (num, map') -> do
+      let map'' = M.insert predLab e map'
+      let phis' = M.insert currLab (M.insert vi (num, map'') map) (phis st)
+      put (st {phis = phis'})
+
+readPhis :: Label -> VarID -> GenM (Maybe Expr)
+readPhis predLab vi = do
+  st <- get
+  currLab <- asks currLabel
+  case M.lookup currLab (phis st) of
+    Nothing -> return Nothing
+    Just map -> case M.lookup vi map of
+      Nothing -> return Nothing
+      Just (_, map') -> return $ M.lookup predLab map'
 
 addrToVarID :: Addr -> VarID
 addrToVarID (Var idt src _) = (idt, src)
@@ -203,6 +236,7 @@ addPhiOperands vi preds (EPhi num _) = do
               _ <- ssaBB bb
               readVariable vi
           )
+      writeToPhis vi predLab expr
       debugPrint $ "addPhiOperand: " ++ printVi vi ++ " <- (L" ++ show predLab ++ ", " ++ show expr ++ ")"
       return (predLab, expr)
 
@@ -222,6 +256,7 @@ readVariableRec vi = do
       debugPrint $ "readVariableRec: put empty phi in " ++ printVi vi
       num <- freshVarNum vi
       let phi = EPhi num []
+      initPhi vi num
       assign vi phi
       phi' <- addPhiOperands vi preds phi
       assign vi phi'
@@ -229,7 +264,7 @@ readVariableRec vi = do
 
 ephiToPhi :: PhiOperand -> (Label, Loc)
 ephiToPhi (lab, ELoc loc) = (lab, loc)
-ephiToPhi (lab, _) = (lab, LImmInt 0)
+ephiToPhi (lab, _) = error "not eloc"
 
 isArgOrArgVar :: Addr -> Bool
 isArgOrArgVar (ArgVar {}) = True
@@ -278,30 +313,24 @@ ssaInstr (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
     then do
       assign (locToVarID loc1') (ELoc loc2)
       ssaInstr t
-    else -- t' <- ssaInstr t
-    -- return $ Unar Asgn loc1' loc2 : t'
-    do
+    else do
       e <- readVariable (locToVarID loc2)
       case e of
         el@(ELoc loc) -> do
           assign (locToVarID loc1') (ELoc loc)
           ssaInstr t
-        -- t' <- ssaInstr t
-        -- return $ Unar Asgn loc1' loc : t'
-        EPhi num pops -> do
-          t' <- ssaInstr t
-          return $ Phi (renumber loc1' num) (map ephiToPhi pops) : t'
+        _ephi -> ssaInstr t
 ssaInstr (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "ssaInstr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
   (loc2', ops2) <- maybeGenPhi loc2
   (loc3', ops3) <- maybeGenPhi loc3
   t' <- ssaInstr t
-  return $ ops2 ++ ops3 ++ Bin op loc1 loc2' loc3' : t'
+  return $ Bin op loc1 loc2' loc3' : t'
 ssaInstr (IRet loc : t) = do
   debugPrint $ "IRet: " ++ show loc
   (loc', ops) <- maybeGenPhi loc
   t' <- ssaInstr t
-  return $ ops ++ IRet loc' : t'
+  return $ IRet loc' : t'
 ssaInstr (instr : t) = do
   t' <- ssaInstr t
   return (instr : t')
@@ -337,9 +366,13 @@ ssaBB bb = do
               updatePhi stmts
           )
       modify (\st -> st {beenIn = M.insert (label bb) (1, stmts') (beenIn st)})
+      p <- gets phis
+      debugPrint $ "done L" ++ show (label bb) ++ " phis:\n\t" ++ show p
       return bb {stmts = reverse stmts'}
     Just (1, stmts) -> do
-      debugPrint $ "done" ++ show (label bb)
+      debugPrint "== ssaBB : just ret =="
+      p <- gets phis
+      debugPrint $ "done L" ++ show (label bb) ++ " phis:\n\t" ++ show p
       return bb {stmts = reverse stmts}
     Nothing -> do
       stmts' <-
@@ -353,17 +386,50 @@ ssaBB bb = do
       modify (\st -> st {beenIn = M.insert (label bb) (0, stmts') (beenIn st)})
       return bb {stmts = reverse stmts'}
 
+emitPhi :: BB' Code -> GenM (BB' Code)
+emitPhi bb = do
+  debugPrint $ "emitPhi " ++ show bb
+  st <- get
+  let mp = fromMaybe (error "impossible") $ M.lookup (label bb) (phis st)
+  foldM
+    ( \acc vi@(idt, src) -> do
+        let (num, popMap) = fromMaybe (error "impossible") $ M.lookup vi mp
+        let pops = map ephiToPhi (M.toList popMap)
+        let loc = LAddr VVoid (Var idt src (Just num))
+        -- TODO awful, but optimal reversing is a todo
+        return $ acc {stmts = stmts acc ++ [Phi loc pops]}
+    )
+    bb
+    (M.keys mp)
+
+-- TODO add type to phi
+emitPhis :: CFG' Code -> GenM (CFG' Code)
+emitPhis cfg = do
+  st <- get
+  debugPrint $ "emitPhis: " ++ show cfg
+  let bbs =
+        map
+          ( \lab ->
+              fromMaybe (error $ "no bb for lab?: " ++ show lab) $ M.lookup lab cfg
+          )
+          $ M.keys (phis st)
+  foldM
+    ( \acc bb -> do
+        bb' <- emitPhi bb
+        return $ M.insert (label bb) bb' acc
+    )
+    cfg
+    bbs
+
 ssaCFG :: CFG' Code -> GenM (CFG' Code)
 ssaCFG cfg = do
-  res <-
-    local (\env -> env {currCfg = cfg}) $
-      mapM
-        ( \(k, v) -> do
-            v' <- ssaBB v
-            return (k, v')
-        )
-        (M.assocs cfg)
-  return $ M.fromList res
+  local
+    (\env -> env {currCfg = cfg})
+    ( do
+        res <- mapM ssaBB cfg >>= emitPhis
+        modify (\st -> st {phis = M.empty})
+        return res
+    )
 
 ssaCFGs :: CFGsNoDefs' Code -> GenM (CFGsNoDefs' Code)
 ssaCFGs = mapM ssaCFG
@@ -380,6 +446,7 @@ toSSA (cfgs, info) = do
           lastDefNumInBlock = M.empty,
           lastDefNum = M.empty,
           beenIn = M.empty,
+          phis = M.empty,
           cfgs
         }
     initEnv =
