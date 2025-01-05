@@ -3,15 +3,16 @@
 module FIR where
 
 import AbsLatte
-import CFGDefs (Label, Bindings, Defs)
+import CFGDefs (Bindings, Defs, Label)
 import Common (Printable (printCode))
 import Control.Monad.State
   ( MonadState (get, put),
     modify,
   )
 import Data.Map (Map)
+import Data.Maybe (fromMaybe)
 
-data VType = VInt | VStr | VBool | VVoid deriving (Eq)
+data VType = VInt | VStr | VBool | VVoid deriving (Eq, Ord)
 
 instance Show VType where
   show VInt = "I"
@@ -19,11 +20,17 @@ instance Show VType where
   show VBool = "B"
   show VVoid = "V"
 
-data Addr = Cmp Int | Var Ident Int | Temp Int
+data Addr = Cmp Int | Var Ident Int (Maybe Int) | Temp Int deriving (Eq, Ord)
 
 instance Show Addr where
   show (Cmp i) = "%cmp_" ++ show i
-  show (Var (Ident s) i) = "%" ++ s ++ "_" ++ show i
+  show (Var (Ident s) src num) =
+    "%"
+      ++ s
+      ++ "_"
+      ++ show src
+      ++ "_"
+      ++ maybe "?" show num
   show (Temp i) = "%t" ++ show i
 
 data Loc
@@ -35,6 +42,7 @@ data Loc
     LAddr VType Addr
   | LLabel (Maybe Label)
   | LString String
+  deriving (Eq, Ord)
 
 instance Show Loc where
   show (LImmInt i) = show i
@@ -50,7 +58,6 @@ typeOfLoc l = case l of
   (LAddr tp _) -> tp
   (LString _) -> VStr
   (LLabel _) -> error "request type of label?"
-
 
 toVType :: Type -> VType
 toVType tp =
@@ -138,6 +145,7 @@ data Instr
   | IRet Loc
   | IRetVoid
   | ILabel Label
+  | Phi Loc [(Label, Loc)]
   deriving (Show)
 
 instance (Emittable Code) where

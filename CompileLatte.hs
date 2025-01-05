@@ -377,8 +377,11 @@ compileProgram v tree = do
   putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = genFIR cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
+  ssacfgs <- toSSA fircfgs
+  putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
   when (v == 1) $ putStrLn $ toDot cfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
+  when (v == 3) $ putStrLn $ toDot ssacfgs
 
 usage :: IO ()
 usage = do
@@ -389,7 +392,9 @@ usage = do
         "  (no arguments)  Parse stdin verbosely.",
         "  (files)         Parse content of files verbosely.",
         "  -s (files)      Silent mode. Parse content of files silently.",
-        "  -g (files)      Print CFG in DOT format."
+        "  -g (files)      Print CFG in DOT format.",
+        "  -f (files)      Print FIRCFG in DOT format.",
+        "  -S (files)      Print SSACFG in DOT format."
       ]
 
 main :: IO ()
@@ -401,4 +406,5 @@ main = do
     "-s" : fs -> mapM_ (runFile 0 pProgram) fs
     "-g" : fs -> mapM_ (runFile 1 pProgram) fs
     "-f" : fs -> mapM_ (runFile 2 pProgram) fs
+    "-S" : fs -> mapM_ (runFile 3 pProgram) fs
     fs -> mapM_ (runFile 5 pProgram) fs
