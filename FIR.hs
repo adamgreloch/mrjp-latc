@@ -20,7 +20,7 @@ instance Show VType where
   show VBool = "B"
   show VVoid = "V"
 
-data Addr = Cmp Int | Var Ident Int (Maybe Int) | Temp Int deriving (Eq, Ord)
+data Addr = Cmp Int | Var Ident Int (Maybe Int) | ArgVar Ident | Temp Int deriving (Eq, Ord)
 
 instance Show Addr where
   show (Cmp i) = "%cmp_" ++ show i
@@ -31,6 +31,8 @@ instance Show Addr where
       ++ show src
       ++ "_"
       ++ maybe "?" show num
+  show (ArgVar (Ident s)) =
+    "%" ++ s
   show (Temp i) = "%t" ++ show i
 
 data Loc

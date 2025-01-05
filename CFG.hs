@@ -314,8 +314,8 @@ procStmts (stmt : t) = do
       local (const env') $ procStmts t
       where
         declareItem :: Item -> CFGM Env
-        declareItem (NoInit _ idt) = addBinding idt tp
-        declareItem (Init _ idt _) = addBinding idt tp
+        declareItem (NoInit _ idt) = bindVar idt tp
+        declareItem (Init _ idt _) = bindVar idt tp
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
@@ -327,19 +327,29 @@ procStmts (stmt : t) = do
       addRetEdgeFrom currLab WhenDone
       return []
 
-addBinding :: Ident -> Type -> CFGM Env
-addBinding idt tp = do
+addBinding :: Def -> Ident -> Type -> CFGM Env
+addBinding def idt tp = do
   sloc <- newSLoc
   currLab <- asks currLabel
   debugPrint $ "addBinding " ++ show idt ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")"
   modify
     ( \st ->
         st
-          { cfgDefs = M.insert sloc (DVar tp currLab) (cfgDefs st)
+          { cfgDefs = M.insert sloc def (cfgDefs st)
           }
     )
   env <- ask
   return env {currBindings = M.insert idt sloc (currBindings env)}
+
+bindVar :: Ident -> Type -> CFGM Env
+bindVar idt tp = do
+  currLab <- asks currLabel
+  addBinding (DVar tp currLab) idt tp
+
+bindArg :: Ident -> Type -> CFGM Env
+bindArg idt tp = do
+  currLab <- asks currLabel
+  addBinding (DArg tp currLab) idt tp
 
 newSLoc :: CFGM SLoc
 newSLoc = gets (M.size . cfgDefs)
@@ -369,7 +379,7 @@ procTopDef (FnDef _ rettp fnname args block) = do
     )
   where
     bindArgs :: Arg -> CFGM Env
-    bindArgs (Arg _ tp idt) = addBinding idt tp
+    bindArgs (Arg _ tp idt) = bindArg idt tp
 
     isVRet :: Stmt -> Bool
     isVRet (VRet _) = True

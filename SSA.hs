@@ -3,7 +3,7 @@ module SSA (toSSA) where
 import AbsLatte (Ident (Ident))
 import CFG
 import CFGDefs
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
@@ -49,16 +49,20 @@ data Store = Store
   { currDef :: Map VarID (Map Label Expr),
     lastDefNumInBlock :: Map VarID (Map Label Int),
     lastDefNum :: Map VarID Int,
-    cfg :: CFG' Code,
+    cfgs :: CFGsNoDefs' Code,
     beenIn :: Map Label (Int, Code)
   }
   deriving (Show)
 
 type GenM a = StateT Store (ReaderT Env IO) a
 
-varID :: Loc -> VarID
-varID (LAddr _ (Var idt src _)) = (idt, src)
-varID loc = error $ "tried getting VarUId not from var: " ++ show loc
+addrToVarID :: Addr -> VarID
+addrToVarID (Var idt src _) = (idt, src)
+addrToVarID (ArgVar idt) = (idt, 0)
+
+locToVarID :: Loc -> VarID
+locToVarID (LAddr _ addr) = addrToVarID addr
+locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 
 debugPrint :: String -> GenM ()
 debugPrint s = do
@@ -101,18 +105,19 @@ freshVarNum vi = do
   return n
 
 freshVar :: Addr -> GenM Addr
-freshVar (Var idt src _) = do
+freshVar addr = do
   st <- get
-  let vu = (idt, src)
-  mln <- getLastNum vu
+  let vi@(idt, src) = addrToVarID addr
+  mln <- getLastNum vi
   let n' = maybe 0 (+ 1) mln
-  setLastNumInBlock vu n'
-  setLastNum vu n'
+  setLastNumInBlock vi n'
+  setLastNum vi n'
   return (Var idt src (Just n'))
 
 freshNum :: Loc -> GenM Loc
 freshNum (LAddr tp var) = do
   var' <- freshVar var
+  debugPrint $ "freshNum: " ++ show var ++ " -> " ++ show var'
   return (LAddr tp var')
 
 freshNumIfUnnumbered :: Loc -> GenM Loc
@@ -169,7 +174,7 @@ renumber :: Loc -> Int -> Loc
 renumber (LAddr tp (Var idt src _)) num = LAddr tp (Var idt src (Just num))
 
 readVariable :: VarID -> GenM Expr
-readVariable vi = do
+readVariable vi@(_, src) = do
   debugPrint $ "readVariable: " ++ printVi vi
   currLab <- asks currLabel
   st <- get
@@ -226,20 +231,39 @@ ephiToPhi :: PhiOperand -> (Label, Loc)
 ephiToPhi (lab, ELoc loc) = (lab, loc)
 ephiToPhi (lab, _) = (lab, LImmInt 0)
 
+isArgOrArgVar :: Addr -> Bool
+isArgOrArgVar (ArgVar {}) = True
+isArgOrArgVar (Var {}) = True
+isArgOrArgVar _ = False
+
 maybeGenPhi :: Loc -> GenM (Loc, [Instr])
-maybeGenPhi loc@(LAddr _ _) = do
-  e <- readVariable (varID loc)
-  case e of
-    ELoc loc' -> return (loc', [])
-    EPhi num pops -> do
-      case loc of
-        (LAddr tp (Var idt src _)) ->
-          do
-            let loc' = LAddr tp (Var idt src (Just num))
-            assign (varID loc) (ELoc loc')
-            debugPrint $ "genPhi: " ++ show loc' ++ " " ++ show pops
-            return (loc', [Phi loc' (map ephiToPhi pops)])
-        _else -> error "can it happen?"
+maybeGenPhi loc@(LAddr tp addr) =
+  case addr of
+    (ArgVar idt) -> do
+      currLab <- asks currLabel
+      cd <- lookupCurrDef (addrToVarID addr) currLab
+      case cd of
+        Nothing -> do
+          loc' <- freshNum loc
+          assign (locToVarID loc') (ELoc loc')
+          return (loc', [])
+        Just e -> exprToRet e
+    (Var {}) -> do
+      do
+        e <- readVariable (locToVarID loc)
+        exprToRet e
+    _else -> return (loc, [])
+  where
+    vi@(idt, src) = addrToVarID addr
+
+    exprToRet :: Expr -> GenM (Loc, [Instr])
+    exprToRet e = case e of
+      ELoc loc' -> return (loc', [])
+      EPhi num pops -> do
+        let loc' = LAddr tp (Var idt src (Just num))
+        assign (locToVarID loc) (ELoc loc')
+        debugPrint $ "genPhi: " ++ show loc' ++ " " ++ show pops
+        return (loc', [Phi loc' (map ephiToPhi pops)])
 maybeGenPhi loc = return (loc, [])
 
 addr :: Loc -> Addr
@@ -247,20 +271,20 @@ addr (LAddr _ addr) = addr
 addr _ = error "not LAddr"
 
 ssaInstr :: Code -> GenM Code
-ssaInstr (Unar Asgn loc1@(LAddr _ (Var {})) loc2 : t) = do
+ssaInstr (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
   loc1' <- freshNum loc1
   debugPrint $ "ssaInstr: " ++ show loc1' ++ " <- " ++ show loc2
   if not $ isVar loc2
     then do
-      assign (varID loc1') (ELoc loc2)
+      assign (locToVarID loc1') (ELoc loc2)
       ssaInstr t
     else -- t' <- ssaInstr t
     -- return $ Unar Asgn loc1' loc2 : t'
     do
-      e <- readVariable (varID loc2)
+      e <- readVariable (locToVarID loc2)
       case e of
         el@(ELoc loc) -> do
-          assign (varID loc1') (ELoc loc)
+          assign (locToVarID loc1') (ELoc loc)
           ssaInstr t
         -- t' <- ssaInstr t
         -- return $ Unar Asgn loc1' loc : t'
@@ -274,6 +298,7 @@ ssaInstr (Bin op loc1 loc2 loc3 : t) = do
   t' <- ssaInstr t
   return $ ops2 ++ ops3 ++ Bin op loc1 loc2' loc3' : t'
 ssaInstr (IRet loc : t) = do
+  debugPrint $ "IRet: " ++ show loc
   (loc', ops) <- maybeGenPhi loc
   t' <- ssaInstr t
   return $ ops ++ IRet loc' : t'
@@ -343,27 +368,22 @@ ssaCFG cfg = do
 ssaCFGs :: CFGsNoDefs' Code -> GenM (CFGsNoDefs' Code)
 ssaCFGs = mapM ssaCFG
 
-cfgToSSA :: CFG' Code -> IO (CFG' Code)
-cfgToSSA cfg = do
-  (cfg', _) <- runReaderT (runStateT m initStore) initEnv
-  return cfg'
+toSSA :: CFGs' Code -> IO (CFGs' Code)
+toSSA (cfgs, info) = do
+  (cfgs', _) <- runReaderT (runStateT m initStore) initEnv
+  return (cfgs', info)
   where
-    m = ssaCFG cfg
+    m = ssaCFGs cfgs
     initStore =
       Store
         { currDef = M.empty,
           lastDefNumInBlock = M.empty,
           lastDefNum = M.empty,
           beenIn = M.empty,
-          cfg
+          cfgs
         }
     initEnv =
       Env
         { currLabel = 0,
           currCfg = M.empty
         }
-
-toSSA :: CFGs' Code -> IO (CFGs' Code)
-toSSA (cfgs, info) = do
-  cfgs' <- mapM cfgToSSA cfgs
-  return (cfgs', info)

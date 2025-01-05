@@ -114,6 +114,7 @@ getVarLocFromBinding idt = do
       case M.lookup sloc (defs st) of
         -- we are before SSA convertion, so the variable is uncounted (Nothing)
         Just (DVar tp lab) -> return (LAddr (toVType tp) (Var idt lab Nothing))
+        Just (DArg tp lab) -> return (LAddr (toVType tp) (ArgVar idt))
         Just (DFun _) -> error "tried getting fun loc"
         Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)

@@ -25,7 +25,7 @@ instance Show Node where
 
 type Bindings = M.Map Ident SLoc
 
-data Def = DVar Type Label | DFun Type deriving (Show)
+data Def = DArg Type Label | DVar Type Label | DFun Type deriving (Show)
 
 type Defs = M.Map SLoc Def
 
