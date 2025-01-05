@@ -40,9 +40,9 @@ import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn)
+import TransformAbsToFIR (genFIR)
 import TypeCheckLatte
 import Prelude hiding (lookup)
-import TransformAbsToFIR (genFIR)
 
 type Err = Either String
 
@@ -377,11 +377,15 @@ compileProgram v tree = do
   putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = genFIR cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
-  ssacfgs <- toSSA fircfgs
-  putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
   when (v == 1) $ putStrLn $ toDot cfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
-  when (v == 3) $ putStrLn $ toDot ssacfgs
+  when
+    (v == 3)
+    ( do
+        ssacfgs <- toSSA fircfgs
+        putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
+        putStrLn $ toDot ssacfgs
+    )
 
 usage :: IO ()
 usage = do

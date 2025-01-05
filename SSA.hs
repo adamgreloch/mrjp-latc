@@ -49,7 +49,7 @@ data Store = Store
   { currDef :: Map VarID (Map Label Expr),
     lastDefNumInBlock :: Map VarID (Map Label Int),
     lastDefNum :: Map VarID Int,
-    cfgs :: CFGsNoDefs' Code,
+    cfg :: CFG' Code,
     beenIn :: Map Label (Int, Code)
   }
   deriving (Show)
@@ -208,11 +208,15 @@ readVariableRec vi = do
   labPreds <- getPreds currLab
   case labPreds of
     [] -> error "wait, what?"
-    [lab] -> local (withLabel lab) $ readVariable vi
+    [lab] -> do
+      cfg <- asks currCfg
+      let bb = fromMaybe (error "aa") $ M.lookup lab cfg
+      _ <- ssaBB bb
+      local (withLabel lab) $ readVariable vi
     preds -> do
       debugPrint $ "readVariableRec: put empty phi in " ++ printVi vi
       num <- freshVarNum vi
-      let phi =  EPhi num []
+      let phi = EPhi num []
       assign vi phi
       phi' <- addPhiOperands vi preds phi
       assign vi phi'
@@ -250,16 +254,16 @@ ssaInstr (Unar Asgn loc1@(LAddr _ (Var {})) loc2 : t) = do
     then do
       assign (varID loc1') (ELoc loc2)
       ssaInstr t
-      -- t' <- ssaInstr t
-      -- return $ Unar Asgn loc1' loc2 : t'
-    else do
+    else -- t' <- ssaInstr t
+    -- return $ Unar Asgn loc1' loc2 : t'
+    do
       e <- readVariable (varID loc2)
       case e of
         el@(ELoc loc) -> do
           assign (varID loc1') (ELoc loc)
           ssaInstr t
-          -- t' <- ssaInstr t
-          -- return $ Unar Asgn loc1' loc : t'
+        -- t' <- ssaInstr t
+        -- return $ Unar Asgn loc1' loc : t'
         EPhi num pops -> do
           t' <- ssaInstr t
           return $ Phi (renumber loc1' num) (map ephiToPhi pops) : t'
@@ -277,7 +281,6 @@ ssaInstr (instr : t) = do
   t' <- ssaInstr t
   return (instr : t')
 ssaInstr [] = return []
-
 
 -- remove trivial phi
 updatePhi (instr@(Phi loc []) : t) = updatePhi t
@@ -326,27 +329,41 @@ ssaBB bb = do
       return bb {stmts = reverse stmts'}
 
 ssaCFG :: CFG' Code -> GenM (CFG' Code)
-ssaCFG cfg = local (\env -> env {currCfg = cfg}) $ mapM ssaBB cfg
+ssaCFG cfg = do
+  res <-
+    local (\env -> env {currCfg = cfg}) $
+      mapM
+        ( \(k, v) -> do
+            v' <- ssaBB v
+            return (k, v')
+        )
+        (M.assocs cfg)
+  return $ M.fromList res
 
 ssaCFGs :: CFGsNoDefs' Code -> GenM (CFGsNoDefs' Code)
 ssaCFGs = mapM ssaCFG
 
-toSSA :: CFGs' Code -> IO (CFGs' Code)
-toSSA (cfgs, info) = do
-  (cfgs', _) <- runReaderT (runStateT m initStore) initEnv
-  return (cfgs', info)
+cfgToSSA :: CFG' Code -> IO (CFG' Code)
+cfgToSSA cfg = do
+  (cfg', _) <- runReaderT (runStateT m initStore) initEnv
+  return cfg'
   where
-    m = ssaCFGs cfgs
+    m = ssaCFG cfg
     initStore =
       Store
         { currDef = M.empty,
           lastDefNumInBlock = M.empty,
           lastDefNum = M.empty,
           beenIn = M.empty,
-          cfgs
+          cfg
         }
     initEnv =
       Env
         { currLabel = 0,
           currCfg = M.empty
         }
+
+toSSA :: CFGs' Code -> IO (CFGs' Code)
+toSSA (cfgs, info) = do
+  cfgs' <- mapM cfgToSSA cfgs
+  return (cfgs', info)
