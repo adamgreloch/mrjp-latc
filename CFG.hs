@@ -32,6 +32,7 @@ import Control.Monad.State
     runStateT,
   )
 import Data.Bifunctor qualified
+import Data.List (find)
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
 import GHC.IO.Handle.FD (stderr)
@@ -343,13 +344,11 @@ addBinding idt tp = do
 newSLoc :: CFGM SLoc
 newSLoc = gets (M.size . cfgDefs)
 
-procBlock :: Block -> CFGM ()
-procBlock (Block _ stmts) = do
-  _ <- procStmts stmts
-  return ()
+procBlock :: Block -> CFGM [Label]
+procBlock (Block _ stmts) = procStmts stmts
 
 procTopDef :: TopDef -> CFGM ()
-procTopDef (FnDef _ _ fnname args block) = do
+procTopDef (FnDef _ rettp fnname args block) = do
   modify (\st -> st {cfgs = M.insert fnname M.empty (cfgs st)})
   lab <- freshLabel
   let env =
@@ -363,18 +362,38 @@ procTopDef (FnDef _ _ fnname args block) = do
     (const env')
     ( do
         addEntryEdgeTo lab fnname
-        procBlock block
+        retLabs <- procBlock block
+
+        -- void functions can lack return stmt, add it for them
+        when (isVoid rettp) $ mapM_ addVRetIfImplicit retLabs
     )
   where
     bindArgs :: Arg -> CFGM Env
     bindArgs (Arg _ tp idt) = addBinding idt tp
+
+    isVRet :: Stmt -> Bool
+    isVRet (VRet _) = True
+    isVRet _ = False
+
+    isVoid :: Type -> Bool
+    isVoid (Void _) = True
+    isVoid _ = False
+
+    addVRetIfImplicit :: Label -> CFGM ()
+    addVRetIfImplicit lab = do
+      bb <- getBB lab
+      case find isVRet $ stmts bb of
+        Nothing -> do
+          putStmtsToBB lab (VRet BNFC'NoPosition : stmts bb)
+          addRetEdgeFrom lab WhenDone
+        _else -> return ()
 
 procProgram :: Program -> CFGM ()
 procProgram (Program _ topdefs) =
   mapM_ procTopDef topdefs
 
 runCFGM :: TypeCheckInfo -> CFGM a -> IO (a, Store)
-runCFGM tcinfo m = runReaderT (runStateT m initStore) initLabel
+runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
   where
     initStore =
       Store
@@ -383,7 +402,7 @@ runCFGM tcinfo m = runReaderT (runStateT m initStore) initLabel
           CFG.lastLabel = 0,
           cfgDefs = globalDefs tcinfo
         }
-    initLabel =
+    initEnv =
       Env
         { currFn = Ident "??",
           currLabel = 0,
