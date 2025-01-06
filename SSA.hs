@@ -1,12 +1,12 @@
-module SSA (toSSA) where
+module SSA (toSSA, SSA (..)) where
 
 import AbsLatte (Ident (Ident))
 import CFG
 import CFGDefs
-import Control.Monad (foldM, foldM_, unless, when)
+import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
-  ( MonadReader (ask, local),
+  ( MonadReader (local),
     ReaderT,
     asks,
     runReaderT,
@@ -25,7 +25,6 @@ import Data.Maybe (fromMaybe)
 import FIR
 import GHC.IO.Handle.FD (stderr)
 import System.IO (hPutStrLn)
-import TransformAbsToFIR
 
 type PhiOperand = (Label, Expr)
 
@@ -55,81 +54,61 @@ data Store = Store
   }
   deriving (Show)
 
-type GenM a = StateT Store (ReaderT Env IO) a
+type SSAM a = StateT Store (ReaderT Env IO) a
 
-initPhi :: VType -> VarID -> Int -> GenM ()
+initPhi :: VType -> VarID -> Int -> SSAM ()
 initPhi tp vi@(idt, src) num = do
   st <- get
   currLab <- asks currLabel
-  let map = M.findWithDefault M.empty currLab (phis st)
-  let map' = M.insert vi (LAddr tp (Var idt src (Just num)), M.empty) map
-  let phis' = M.insert currLab map' (phis st)
+  let mp = M.findWithDefault M.empty currLab (phis st)
+  let mp' = M.insert vi (LAddr tp (Var idt src (Just num)), M.empty) mp
+  let phis' = M.insert currLab mp' (phis st)
   put (st {phis = phis'})
 
 -- TODO clean this up some day
-writeToPhis :: VarID -> Label -> Expr -> GenM ()
+writeToPhis :: VarID -> Label -> Expr -> SSAM ()
 writeToPhis vi predLab e = do
   st <- get
   currLab <- asks currLabel
-  let map = M.findWithDefault M.empty currLab (phis st)
-  case M.lookup vi map of
+  let mp = M.findWithDefault M.empty currLab (phis st)
+  case M.lookup vi mp of
     Nothing -> error "phi not inited"
-    Just (num, map') -> do
-      let map'' = M.insert predLab e map'
-      let phis' = M.insert currLab (M.insert vi (num, map'') map) (phis st)
+    Just (num, mp') -> do
+      let mp'' = M.insert predLab e mp'
+      let phis' = M.insert currLab (M.insert vi (num, mp'') mp) (phis st)
       put (st {phis = phis'})
-
-readPhis :: Label -> VarID -> GenM (Maybe Expr)
-readPhis predLab vi = do
-  st <- get
-  currLab <- asks currLabel
-  case M.lookup currLab (phis st) of
-    Nothing -> return Nothing
-    Just map -> case M.lookup vi map of
-      Nothing -> return Nothing
-      Just (_, map') -> return $ M.lookup predLab map'
 
 addrToVarID :: Addr -> VarID
 addrToVarID (Var idt src _) = (idt, src)
 addrToVarID (ArgVar idt) = (idt, 0)
+-- TODO make addr a different type than temp?
+addrToVarID _ = error "expected var or argvar"
 
 locToVarID :: Loc -> VarID
 locToVarID (LAddr _ addr) = addrToVarID addr
 locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 
-debugPrint :: String -> GenM ()
+debugPrint :: String -> SSAM ()
 debugPrint s = do
   currLab <- asks currLabel
   when True $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(L" ++ show currLab ++ ") " ++ s
 
-getLastNumInBlock :: VarID -> GenM (Maybe Int)
-getLastNumInBlock vu = do
-  st <- get
-  currLab <- asks currLabel
-  case M.lookup vu (lastDefNumInBlock st) of
-    Nothing -> return Nothing
-    Just map -> return $ M.lookup currLab map
+getLastNum :: VarID -> SSAM (Maybe Int)
+getLastNum vu = gets (M.lookup vu . lastDefNum)
 
-getLastNum :: VarID -> GenM (Maybe Int)
-getLastNum vu = do
-  st <- get
-  currLab <- asks currLabel
-  return $ M.lookup vu (lastDefNum st)
-
-setLastNumInBlock :: VarID -> Int -> GenM ()
+setLastNumInBlock :: VarID -> Int -> SSAM ()
 setLastNumInBlock vi num = do
   debugPrint $ "setLastNumInBlock: " ++ printVi vi ++ " <- " ++ show num
   st <- get
   currLab <- asks currLabel
-  let map = M.insert currLab num $ M.findWithDefault M.empty vi (lastDefNumInBlock st)
-  put (st {lastDefNumInBlock = M.insert vi map (lastDefNumInBlock st)})
+  let mp = M.insert currLab num $ M.findWithDefault M.empty vi (lastDefNumInBlock st)
+  put (st {lastDefNumInBlock = M.insert vi mp (lastDefNumInBlock st)})
 
-setLastNum :: VarID -> Int -> GenM ()
+setLastNum :: VarID -> Int -> SSAM ()
 setLastNum vu num = modify (\st -> st {lastDefNum = M.insert vu num (lastDefNum st)})
 
-freshVarNum :: VarID -> GenM Int
+freshVarNum :: VarID -> SSAM Int
 freshVarNum vi = do
-  st <- get
   mln <- getLastNum vi
   let n = maybe 0 (+ 1) mln
   setLastNumInBlock vi n
@@ -137,9 +116,8 @@ freshVarNum vi = do
   debugPrint $ "freshVarNum: " ++ printVi vi ++ " -> " ++ show n
   return n
 
-freshVar :: Addr -> GenM Addr
+freshVar :: Addr -> SSAM Addr
 freshVar addr = do
-  st <- get
   let vi@(idt, src) = addrToVarID addr
   mln <- getLastNum vi
   let n' = maybe 0 (+ 1) mln
@@ -147,70 +125,58 @@ freshVar addr = do
   setLastNum vi n'
   return (Var idt src (Just n'))
 
-freshNum :: Loc -> GenM Loc
+freshNum :: Loc -> SSAM Loc
 freshNum (LAddr tp var) = do
   var' <- freshVar var
   debugPrint $ "freshNum: " ++ show var ++ " -> " ++ show var'
   return (LAddr tp var')
+freshNum _ = error "expected addr"
 
-freshNumIfUnnumbered :: Loc -> GenM Loc
-freshNumIfUnnumbered loc@(LAddr _ (Var _ _ Nothing)) = freshNum loc
-freshNumIfUnnumbered loc@(LAddr _ (Var _ _ (Just _))) = return loc
-
-assign :: VarID -> Expr -> GenM ()
+assign :: VarID -> Expr -> SSAM ()
 assign vi expr = do
   debugPrint $ "assign: " ++ printVi vi ++ " <- " ++ show expr
   currLab <- asks currLabel
   st <- get
-  let map =
+  let mp =
         M.insert currLab expr $
           M.findWithDefault M.empty vi (currDef st)
-  let currDef' = M.insert vi map (currDef st)
+  let currDef' = M.insert vi mp (currDef st)
   put (st {currDef = currDef'})
 
-getPreds :: Label -> GenM [Label]
+getPreds :: Label -> SSAM [Label]
 getPreds lab = do
   cfg <- asks currCfg
-  st <- get
   case M.lookup lab cfg of
     Just bb -> return $ justBlocks $ preds bb
     Nothing -> error $ "no bb with this label " ++ show lab
   where
     justBlocks :: [Node] -> [Label]
-    justBlocks (FnBlock lab : t) = lab : justBlocks t
+    justBlocks (FnBlock lab1 : t) = lab1 : justBlocks t
     justBlocks (_ : t) = justBlocks t
     justBlocks [] = []
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
 
-lookupCurrDef :: VarID -> Label -> GenM (Maybe Expr)
-lookupCurrDef vi@(idt, src) lab = do
+lookupCurrDef :: VarID -> Label -> SSAM (Maybe Expr)
+lookupCurrDef vi lab = do
   st <- get
   case M.lookup vi (currDef st) of
     Nothing -> do
       debugPrint $ "looked for " ++ printVi vi ++ "got nothing"
       return Nothing
-    Just map -> do
-      debugPrint $ "looked for " ++ printVi vi ++ " got:\n\t" ++ show map
-      return $ M.lookup lab map
+    Just mp -> do
+      debugPrint $ "looked for " ++ printVi vi ++ " got:\n\t" ++ show mp
+      return $ M.lookup lab mp
 
 isVar :: Loc -> Bool
 isVar (LAddr _ (Var {})) = True
 isVar _ = False
 
-isUnnumbered :: Loc -> Bool
-isUnnumbered (LAddr _ (Var _ _ Nothing)) = True
-isUnnumbered _ = False
-
-renumber :: Loc -> Int -> Loc
-renumber (LAddr tp (Var idt src _)) num = LAddr tp (Var idt src (Just num))
-
-readVariable :: VType -> VarID -> GenM Expr
-readVariable tp vi@(_, src) = do
+readVariable :: VType -> VarID -> SSAM Expr
+readVariable tp vi = do
   debugPrint $ "readVariable: " ++ printVi vi
   currLab <- asks currLabel
-  st <- get
   cd <- lookupCurrDef vi currLab
   case cd of
     Just e -> do
@@ -220,12 +186,12 @@ readVariable tp vi@(_, src) = do
       debugPrint "looked up nothing"
       readVariableRec tp vi
 
-addPhiOperands :: VType -> VarID -> [Label] -> Expr -> GenM Expr
+addPhiOperands :: VType -> VarID -> [Label] -> Expr -> SSAM Expr
 addPhiOperands tp vi preds (EPhi num _) = do
   pop <- mapM addPhiOperand (sort preds)
   return (EPhi num pop)
   where
-    addPhiOperand :: Label -> GenM PhiOperand
+    addPhiOperand :: Label -> SSAM PhiOperand
     addPhiOperand predLab = do
       expr <-
         local
@@ -239,8 +205,9 @@ addPhiOperands tp vi preds (EPhi num _) = do
       writeToPhis vi predLab expr
       debugPrint $ "addPhiOperand: " ++ printVi vi ++ " <- (L" ++ show predLab ++ ", " ++ show expr ++ ")"
       return (predLab, expr)
+addPhiOperands _ _ _ (ELoc _) = error "expected EPhi"
 
-readVariableRec :: VType -> VarID -> GenM Expr
+readVariableRec :: VType -> VarID -> SSAM Expr
 readVariableRec tp vi = do
   currLab <- asks currLabel
   debugPrint $ "readVariableRec: " ++ printVi vi
@@ -264,17 +231,12 @@ readVariableRec tp vi = do
 
 ephiToPhi :: PhiOperand -> (Label, Loc)
 ephiToPhi (lab, ELoc loc) = (lab, loc)
-ephiToPhi (lab, _) = error "not eloc"
+ephiToPhi (_, _) = error "not eloc"
 
-isArgOrArgVar :: Addr -> Bool
-isArgOrArgVar (ArgVar {}) = True
-isArgOrArgVar (Var {}) = True
-isArgOrArgVar _ = False
-
-maybeGenPhi :: Loc -> GenM Loc
+maybeGenPhi :: Loc -> SSAM Loc
 maybeGenPhi loc@(LAddr tp addr) =
   case addr of
-    (ArgVar idt) -> do
+    (ArgVar _) -> do
       currLab <- asks currLabel
       cd <- lookupCurrDef (addrToVarID addr) currLab
       case cd of
@@ -289,9 +251,9 @@ maybeGenPhi loc@(LAddr tp addr) =
         exprToRet e
     _else -> return loc
   where
-    vi@(idt, src) = addrToVarID addr
+    (idt, src) = addrToVarID addr
 
-    exprToRet :: Expr -> GenM Loc
+    exprToRet :: Expr -> SSAM Loc
     exprToRet e = case e of
       ELoc loc' -> return loc'
       EPhi num pops -> do
@@ -301,50 +263,46 @@ maybeGenPhi loc@(LAddr tp addr) =
         return loc'
 maybeGenPhi loc = return loc
 
-addr :: Loc -> Addr
-addr (LAddr _ addr) = addr
-addr _ = error "not LAddr"
-
-ssaInstr :: Code -> GenM Code
-ssaInstr (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
+ssaCode :: Code -> SSAM Code
+ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
   loc1' <- freshNum loc1
   debugPrint $ "ssaInstr: " ++ show loc1' ++ " <- " ++ show loc2
   if not $ isVar loc2
     then do
       assign (locToVarID loc1') (ELoc loc2)
-      ssaInstr t
+      ssaCode t
     else do
       e <- readVariable (typeOfLoc loc2) (locToVarID loc2)
       case e of
-        el@(ELoc loc) -> do
+        (ELoc loc) -> do
           assign (locToVarID loc1') (ELoc loc)
-          ssaInstr t
-        _ephi -> ssaInstr t
-ssaInstr (Bin op loc1 loc2 loc3 : t) = do
+          ssaCode t
+        _ephi -> ssaCode t
+ssaCode (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "ssaInstr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
   loc2' <- maybeGenPhi loc2
   loc3' <- maybeGenPhi loc3
-  t' <- ssaInstr t
+  t' <- ssaCode t
   return $ Bin op loc1 loc2' loc3' : t'
-ssaInstr (Call loc1 idt locs : t) = do
+ssaCode (Call loc1 idt locs : t) = do
   locs' <- mapM maybeGenPhi locs
-  t' <- ssaInstr t
+  t' <- ssaCode t
   return $ Call loc1 idt locs' : t'
-ssaInstr (IRet loc : t) = do
+ssaCode (IRet loc : t) = do
   debugPrint $ "IRet: " ++ show loc
   loc' <- maybeGenPhi loc
-  t' <- ssaInstr t
+  t' <- ssaCode t
   return $ IRet loc' : t'
-ssaInstr (instr : t) = do
-  t' <- ssaInstr t
+ssaCode (instr : t) = do
+  t' <- ssaCode t
   return (instr : t')
-ssaInstr [] = return []
+ssaCode [] = return []
 
-ssaBB :: BB' Code -> GenM (BB' Code)
+ssaBB :: BB' Code -> SSAM (BB' Code)
 ssaBB bb = do
   bi <- gets beenIn
   case M.lookup (label bb) bi of
-    Just  stmts -> do
+    Just stmts -> do
       debugPrint "== ssaBB : just ret =="
       p <- gets phis
       debugPrint $ "done L" ++ show (label bb) ++ " phis:\n\t" ++ show p
@@ -355,7 +313,7 @@ ssaBB bb = do
           (withLabel (label bb))
           ( do
               debugPrint "== ssaBB : ssaInstr =="
-              ssaInstr (reverse $ stmts bb)
+              ssaCode (reverse $ stmts bb)
           )
       debugPrint $ "beenIn" ++ show (label bb)
       modify (\st -> st {beenIn = M.insert (label bb) stmts' (beenIn st)})
@@ -364,22 +322,21 @@ ssaBB bb = do
 -- TODO propagate assignment in case of one pop? maybe leave it to copy
 -- propagation?
 nonTrivialPhiOrNop :: Loc -> [(Label, Loc)] -> [Instr]
-nonTrivialPhiOrNop phiLoc pops = 
-  case filter isNotSame pops of 
+nonTrivialPhiOrNop phiLoc pops =
+  case filter isNotSame pops of
     [] -> []
     pops' -> [Phi phiLoc pops']
   where
     isNotSame :: (Label, Loc) -> Bool
     isNotSame (_, loc) = loc /= phiLoc
 
-
-emitPhi :: BB' Code -> GenM (BB' Code)
+emitPhi :: BB' Code -> SSAM (BB' Code)
 emitPhi bb = do
   debugPrint $ "emitPhi " ++ show bb
   st <- get
   let mp = fromMaybe (error "impossible") $ M.lookup (label bb) (phis st)
   foldM
-    ( \acc vi@(idt, src) -> do
+    ( \acc vi -> do
         let (loc, popMap) = fromMaybe (error "impossible") $ M.lookup vi mp
         let op = nonTrivialPhiOrNop loc $ map ephiToPhi (M.toList popMap)
         -- TODO awful, but optimal reversing is a todo
@@ -388,7 +345,7 @@ emitPhi bb = do
     bb
     (M.keys mp)
 
-emitPhis :: CFG' Code -> GenM (CFG' Code)
+emitPhis :: CFG' Code -> SSAM (CFG' Code)
 emitPhis cfg = do
   st <- get
   debugPrint $ "emitPhis: " ++ show cfg
@@ -406,7 +363,7 @@ emitPhis cfg = do
     cfg
     bbs
 
-ssaCFG :: CFG' Code -> GenM (CFG' Code)
+ssaCFG :: CFG' Code -> SSAM (CFG' Code)
 ssaCFG cfg = do
   local
     (\env -> env {currCfg = cfg})
@@ -416,13 +373,15 @@ ssaCFG cfg = do
         return res
     )
 
-ssaCFGs :: CFGsNoDefs' Code -> GenM (CFGsNoDefs' Code)
+ssaCFGs :: CFGsNoDefs' Code -> SSAM (CFGsNoDefs' Code)
 ssaCFGs = mapM ssaCFG
 
-toSSA :: CFGs' Code -> IO (CFGs' Code)
+newtype SSA = SSA (CFGs' Code)
+
+toSSA :: CFGs' Code -> IO SSA
 toSSA (cfgs, info) = do
   (cfgs', _) <- runReaderT (runStateT m initStore) initEnv
-  return (cfgs', info)
+  return $ SSA (cfgs', info)
   where
     m = ssaCFGs cfgs
     initStore =

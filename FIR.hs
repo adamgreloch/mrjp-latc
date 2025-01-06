@@ -3,15 +3,9 @@
 module FIR where
 
 import AbsLatte
-import CFGDefs (Bindings, Defs, Label)
+import CFGDefs (Label)
 import Common (Printable (printCode))
-import Control.Monad.State
-  ( MonadState (get, put),
-    modify,
-  )
 import Data.Map (Map)
-import Data.Maybe (fromMaybe)
-import Data.Set (Set)
 
 data VType = VInt | VStr | VBool | VVoid deriving (Eq, Ord)
 
@@ -100,30 +94,6 @@ instance (Show TopDefFIR) where
 
 type ProgramFIR = [TopDefFIR]
 
-data FIRStore = FIRStore_
-  { code :: Code,
-    locs :: Map Ident Loc,
-    lastJumpLabel :: Label,
-    lastTemp :: Int,
-    blockLabel :: Label,
-    blockBindings :: Bindings,
-    globalBindings :: Bindings,
-    defs :: Defs,
-
-    -- | helps retrieving appropriate binding in cases like
-    -- int a = 2; // a_1
-    -- {
-    --   a = a + 1 // this is still a_1
-    --   int a = 2; // a_2
-    --   ...
-    -- }
-    definedAlready :: Map Label (Set Ident) 
-  }
-  deriving (Show)
-
-class Emittable a where
-  emit :: (MonadState FIRStore m) => a -> m ()
-
 -- | Unary operands (Loc := Op1 Loc or Loc Op1 Loc)
 data Op1
   = Asgn
@@ -160,17 +130,3 @@ data Instr
   | ILabel Label
   | Phi Loc [(Label, Loc)]
   deriving (Show)
-
-instance (Emittable Code) where
-  emit c = modify (\st -> st {code = c ++ code st})
-
-instance (Emittable Instr) where
-  emit o = modify (\st -> st {code = o : code st})
-
--- | Takes emmited code from FIRStore and cleans FIRStore.code
-takeCode :: (MonadState FIRStore m) => m Code
-takeCode = do
-  st <- get
-  let res = code st
-  put (st {code = []})
-  return res

@@ -10,12 +10,51 @@ import Control.Monad.State
     modify,
     runState,
   )
+import Data.Map (Map)
 import Data.Map qualified as M
+import Data.Set (Set)
 import Data.Set qualified as S
 import FIR
 import GHC.Base (assert)
 
+data FIRStore = FIRStore_
+  { code :: Code,
+    locs :: Map Ident Loc,
+    lastJumpLabel :: Label,
+    lastTemp :: Int,
+    blockLabel :: Label,
+    blockBindings :: Bindings,
+    globalBindings :: Bindings,
+    defs :: Defs,
+    -- | helps retrieving appropriate binding in cases like
+    -- int a = 2; // a_1
+    -- {
+    --   a = a + 1 // this is still a_1
+    --   int a = 2; // a_2
+    --   ...
+    -- }
+    definedAlready :: Map Label (Set Ident)
+  }
+  deriving (Show)
+
 type GenM a = State FIRStore a
+
+class Emittable a where
+  emit :: (MonadState FIRStore m) => a -> m ()
+
+instance (Emittable Code) where
+  emit c = modify (\st -> st {code = c ++ code st})
+
+instance (Emittable Instr) where
+  emit o = modify (\st -> st {code = o : code st})
+
+-- | Takes emmited code from FIRStore and cleans FIRStore.code
+takeCode :: (MonadState FIRStore m) => m Code
+takeCode = do
+  st <- get
+  let res = code st
+  put (st {code = []})
+  return res
 
 freshTemp :: GenM Addr
 freshTemp = do
@@ -169,7 +208,7 @@ getVarLocFromBinding idt = do
     defToLoc :: Def -> GenM Loc
     defToLoc def = case def of
       (DVar tp (BlockLabel lab)) -> return (LAddr (toVType tp) (Var idt lab Nothing))
-      (DArg tp lab) -> return (LAddr (toVType tp) (ArgVar idt))
+      (DArg tp _) -> return (LAddr (toVType tp) (ArgVar idt))
       (DFun _) -> error "tried getting fun def"
       _else -> error "impossible"
     fromThisLab :: Def -> GenM Bool
@@ -188,9 +227,8 @@ getFnRetTypeFromBinding idt = do
     Just (sloc : _) ->
       case M.lookup sloc (defs st) of
         Just (DFun tp) -> return $ toVType tp
-        Just (DVar {}) -> error "var instead of fun"
-        -- Just [] -> error "impossible"
-        Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
+        _else -> error $ "fn def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
+    Just [] -> error "defs vs. bindings inconsistency"
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
 
 genStmts :: [Stmt] -> GenM ()

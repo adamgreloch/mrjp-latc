@@ -170,15 +170,6 @@ addEdgeFromTo lab0 lab1 w = do
       mapLabelToBB lab0 $ bb0 {succs = (FnBlock lab1, w) : succs bb0}
       mapLabelToBB lab1 $ bb1 {preds = FnBlock lab0 : preds bb1}
 
-mergeLabels :: Label -> Label -> CFGM ()
-mergeLabels lab0 lab1 = do
-  bb0 <- getBB lab0
-  bb1 <- getBB lab1
-  mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
-  mapM_ (\(l, _) -> replaceRefToLabel lab0 lab1 l) (succs bb0)
-  mapLabelToBB lab1 $ bb1 {stmts = stmts bb1 ++ stmts bb0, preds = preds bb0}
-  removeLabel lab0
-
 addEntryEdgeTo :: Label -> Ident -> CFGM ()
 addEntryEdgeTo lab fnname = do
   bb <- getBB lab
