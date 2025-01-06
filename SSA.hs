@@ -357,6 +357,18 @@ ssaBB bb = do
       modify (\st -> st {beenIn = M.insert (label bb) stmts' (beenIn st)})
       return bb {stmts = reverse stmts'}
 
+-- TODO propagate assignment in case of one pop? maybe leave it to copy
+-- propagation?
+nonTrivialPhiOrNop :: Loc -> [(Label, Loc)] -> [Instr]
+nonTrivialPhiOrNop phiLoc pops = 
+  case filter isNotSame pops of 
+    [] -> []
+    pops' -> [Phi phiLoc pops']
+  where
+    isNotSame :: (Label, Loc) -> Bool
+    isNotSame (_, loc) = loc /= phiLoc
+
+
 emitPhi :: BB' Code -> GenM (BB' Code)
 emitPhi bb = do
   debugPrint $ "emitPhi " ++ show bb
@@ -365,9 +377,9 @@ emitPhi bb = do
   foldM
     ( \acc vi@(idt, src) -> do
         let (loc, popMap) = fromMaybe (error "impossible") $ M.lookup vi mp
-        let pops = map ephiToPhi (M.toList popMap)
+        let op = nonTrivialPhiOrNop loc $ map ephiToPhi (M.toList popMap)
         -- TODO awful, but optimal reversing is a todo
-        return $ acc {stmts = stmts acc ++ [Phi loc pops]}
+        return $ acc {stmts = stmts acc ++ op}
     )
     bb
     (M.keys mp)
