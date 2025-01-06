@@ -5,7 +5,7 @@
 module TypeCheckLatte (typeCheckProgram, TypeCheckInfo(..)) where
 
 import AbsLatte
-import CFGDefs (Bindings, Def (..), Defs)
+import CFGDefs (Bindings, Def (..), Defs, Label (BlockLabel))
 import Common
 import Control.Monad (when)
 import Control.Monad.Except
@@ -428,7 +428,7 @@ envToTypeCheckInfo tenv = do
       where
         sloc = M.size (globalBindings tc)
         dtp = case vpt of
-          TVar _ tp -> DVar tp 0
+          TVar _ tp -> DVar tp (BlockLabel 0)
           TFn _ tp _ -> DFun tp
 
 typeCheckProgram :: Int -> Program -> IO TypeCheckInfo

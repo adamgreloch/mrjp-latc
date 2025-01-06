@@ -436,6 +436,6 @@ toSSA (cfgs, info) = do
         }
     initEnv =
       Env
-        { currLabel = 0,
+        { currLabel = BlockLabel 0,
           currCfg = M.empty
         }

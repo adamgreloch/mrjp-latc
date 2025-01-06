@@ -51,7 +51,7 @@ instance Show Loc where
   show (LImmInt i) = show i
   show (LImmBool b) = show b
   show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
-  show (LLabel lab) = "%L" ++ maybe "?" show lab
+  show (LLabel lab) = "%" ++ maybe "?" show lab
   show (LString s) = '\"' : s ++ "\""
 
 typeOfLoc :: Loc -> VType
@@ -103,8 +103,8 @@ type ProgramFIR = [TopDefFIR]
 data FIRStore = FIRStore_
   { code :: Code,
     locs :: Map Ident Loc,
+    lastJumpLabel :: Label,
     lastTemp :: Int,
-    lastLabel :: Label,
     blockLabel :: Label,
     blockBindings :: Bindings,
     globalBindings :: Bindings,

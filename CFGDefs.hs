@@ -4,7 +4,11 @@ import AbsLatte (Ident (..), Type)
 import Data.List (find)
 import Data.Map qualified as M
 
-type Label = Int
+data Label = BlockLabel Int | JumpLabel Int deriving (Eq, Ord)
+
+instance (Show Label) where
+  show (BlockLabel n) = "L" ++ show n
+  show (JumpLabel n) = "J" ++ show n
 
 type SLoc = Int
 
@@ -20,7 +24,7 @@ data Node = FnEntry Ident | FnBlock Label | FnRet Ident deriving (Eq)
 
 instance Show Node where
   show (FnEntry (Ident s)) = "FnEntry_" ++ s
-  show (FnBlock l) = "L" ++ show l
+  show (FnBlock l) = show l
   show (FnRet (Ident s)) = "FnRet_" ++ s
 
 type Bindings = M.Map Ident [SLoc]
@@ -45,7 +49,8 @@ type CFGsNoDefs' a = M.Map Ident (CFG' a)
 data CFGInfo = CFGInfo
   { cfgInfoBindings :: Bindings,
     cfgInfoDefs :: Defs
-  } deriving (Show)
+  }
+  deriving (Show)
 
 type CFGs' a = (CFGsNoDefs' a, CFGInfo)
 

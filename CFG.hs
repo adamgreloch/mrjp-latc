@@ -69,9 +69,12 @@ debugPrint s = when True $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
 freshLabel :: CFGM Label
 freshLabel = do
   st <- get
-  let fresh = CFG.lastLabel st + 1
-  put (st {CFG.lastLabel = fresh})
-  return fresh
+  case CFG.lastLabel st of
+    BlockLabel n -> do
+      let fresh = BlockLabel (n + 1)
+      put (st {lastLabel = fresh})
+      return fresh
+    _else -> error "why"
 
 addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
@@ -414,13 +417,13 @@ runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
       Store
         { cfgs = M.empty,
           currStmts = [],
-          CFG.lastLabel = 0,
+          CFG.lastLabel = BlockLabel 0,
           cfgDefs = globalDefs tcinfo
         }
     initEnv =
       Env
         { currFn = Ident "??",
-          currLabel = 0,
+          currLabel = BlockLabel 0,
           currBindings = globalBindings tcinfo
         }
 
@@ -471,7 +474,7 @@ bbToDot bb =
     ++ foldr (\(s, w) acc -> bbLabStr ++ " -> " ++ show s ++ "[label=" ++ show w ++ "];\n" ++ acc) [] (succs bb)
     ++ foldr (\p acc -> show p ++ " -> " ++ bbLabStr ++ ";\n" ++ acc) [] (filter isFnEntry $ preds bb)
   where
-    bbLabStr = "L" ++ show (label bb)
+    bbLabStr = show (label bb)
     isFnEntry :: Node -> Bool
     isFnEntry (FnEntry _) = True
     isFnEntry _ = False

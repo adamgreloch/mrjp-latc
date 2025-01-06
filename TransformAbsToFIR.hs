@@ -24,16 +24,26 @@ freshTemp = do
   put (st {lastTemp = fresh})
   return (Temp fresh)
 
+freshJumpLabel :: GenM Label
+freshJumpLabel = do
+  st <- get
+  case lastJumpLabel st of
+    JumpLabel n -> do
+      let fresh = JumpLabel (n + 1)
+      put (st {lastJumpLabel = fresh})
+      return fresh
+    _else -> error "why"
+
 genExp :: Expr -> GenM Loc
 genExp (EVar _ idt) = getVarLocFromBinding idt
 genExp (ELitInt _ n) = return (LImmInt (fromIntegral n))
 genExp (ELitTrue _) = return (LImmBool True)
 genExp (ELitFalse _) = return (LImmBool False)
 genExp (EApp _ idt exprs) = do
-  tmp <- freshTemp
   tp <- getFnRetTypeFromBinding idt
-  let resLoc = LAddr tp tmp
   locs <- mapM genExp exprs
+  tmp <- freshTemp
+  let resLoc = LAddr tp tmp
   emit $ Call resLoc idt locs
   return resLoc
 genExp (EString _ s) = return (LString s)
@@ -92,19 +102,31 @@ genExp (ERel _ e1 relOp e2) = do
       GE _ -> GEq
       EQU _ -> Eq
       NE _ -> NEq
-genExp (EAnd _ e1 e2) = do
+
+-- For short-circuiting purposes, meeting LLVM SSA requirements and leaving
+-- CFG at all readable the following compromise has been made: the BB
+-- is identified with `BlockLabel` labels and it can nest blocks
+-- marked with `JumpLabel`. These blocks are created in EAnd and EOr generators
+-- below and are ignored by CFG. We also put phis by hand since it is easy.
+-- Creating a new BB just to short-circuit would make things too messy.
+genExp (EAnd _ e1 e2) = genShortCircuit e1 e2 True
+genExp (EOr _ e1 e2) = genShortCircuit e1 e2 False
+
+genShortCircuit :: Expr -> Expr -> Bool -> GenM Loc
+genShortCircuit e1 e2 nextIfTrue = do
+  blockLab <- gets blockLabel
   loc1 <- genExp e1
+  labNext <- freshJumpLabel
+  labSkip <- freshJumpLabel
+  let (onTrue, onFalse) = if nextIfTrue then (labNext, labSkip) else (labSkip, labNext)
+  emit $ Bin CondBr loc1 (LLabel (Just onTrue)) (LLabel (Just onFalse))
+  emit $ ILabel labNext
   loc2 <- genExp e2
+  emit $ Br (LLabel (Just labSkip))
+  emit $ ILabel labSkip
   tmp <- freshTemp
   let resLoc = LAddr VBool tmp
-  emit $ Bin And resLoc loc1 loc2
-  return resLoc
-genExp (EOr _ e1 e2) = do
-  loc1 <- genExp e1
-  loc2 <- genExp e2
-  tmp <- freshTemp
-  let resLoc = LAddr VBool tmp
-  emit $ Bin Or resLoc loc1 loc2
+  emit $ Phi resLoc [(blockLab, loc1), (labNext, loc2)]
   return resLoc
 
 wasDefinedInBlock :: Ident -> GenM Bool
@@ -146,15 +168,16 @@ getVarLocFromBinding idt = do
 
     defToLoc :: Def -> GenM Loc
     defToLoc def = case def of
-      (DVar tp lab) -> return (LAddr (toVType tp) (Var idt lab Nothing))
+      (DVar tp (BlockLabel lab)) -> return (LAddr (toVType tp) (Var idt lab Nothing))
       (DArg tp lab) -> return (LAddr (toVType tp) (ArgVar idt))
       (DFun _) -> error "tried getting fun def"
+      _else -> error "impossible"
     fromThisLab :: Def -> GenM Bool
     fromThisLab def = do
       currLab <- gets blockLabel
       case def of
         (DVar _ lab) -> return $ currLab == lab
-        (DArg _ lab) -> return $ currLab == lab
+        (DArg _ _) -> return False
         (DFun _) -> error "tried getting fun def"
 
 getFnRetTypeFromBinding :: Ident -> GenM VType
@@ -263,11 +286,11 @@ genFIR (cfgs, info) =
     m = genCFGs cfgs
     initStore =
       FIRStore_
-        { lastLabel = 0,
+        { lastJumpLabel = JumpLabel 0,
           lastTemp = 0,
           code = [],
           locs = M.empty,
-          blockLabel = 0,
+          blockLabel = BlockLabel 0,
           blockBindings = M.empty,
           globalBindings = cfgInfoBindings info,
           defs = cfgInfoDefs info,
