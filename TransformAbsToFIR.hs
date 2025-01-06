@@ -206,11 +206,11 @@ genStmts (Ret _ e : t) = do
   emit $ IRet loc
   unless (null t) $ error "BB should end with Ret"
 genStmts (Incr p idt : t) = do
-  _ <- genExp (EAdd p (EVar p idt) (Plus p) (ELitInt p 1))
-  genStmts t
+  let e = EAdd p (EVar p idt) (Plus p) (ELitInt p 1)
+  genStmts (Ass p idt e : t)
 genStmts (Decr p idt : t) = do
-  _ <- genExp (EAdd p (EVar p idt) (Minus p) (ELitInt p 1))
-  genStmts t
+  let e = EAdd p (EVar p idt) (Minus p) (ELitInt p 1)
+  genStmts (Ass p idt e : t)
 
 -- in control instructions we don't care about their
 -- true/false bodies as these are a part of other blocks
