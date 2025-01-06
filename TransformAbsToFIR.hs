@@ -90,17 +90,15 @@ genExp (AbsLatte.Neg _ e) = do
   loc <- genExp e
   tmp <- freshTemp
   let retLoc = LAddr (typeOfLoc loc) tmp
-  emit $ Unar FIR.Neg retLoc loc
+  emit $ Bin Sub retLoc (LImmInt 0) loc
   return retLoc
 genExp (AbsLatte.Not _ e) = do
   loc <- genExp e
   tmp <- freshTemp
   let retLoc = LAddr (typeOfLoc loc) tmp
-  emit $ Unar FIR.Not retLoc loc
+  emit $ Bin Eq retLoc loc (LImmBool False)
   return retLoc
 
--- TODO we will probably want to store the expression depth
--- and emit based on temp usage (to maintain log(n))
 genExp (EAdd _ e1 addOp e2) = do
   loc1 <- genExp e1
   loc2 <- genExp e2
@@ -209,7 +207,7 @@ getVarLocFromBinding idt = do
     defToLoc def = case def of
       (DVar tp (BlockLabel lab)) -> return (LAddr (toVType tp) (Var idt lab Nothing))
       (DArg tp _) -> return (LAddr (toVType tp) (ArgVar idt))
-      (DFun _) -> error "tried getting fun def"
+      (DFun _ _) -> error "tried getting fun def"
       _else -> error "impossible"
     fromThisLab :: Def -> GenM Bool
     fromThisLab def = do
@@ -217,7 +215,7 @@ getVarLocFromBinding idt = do
       case def of
         (DVar _ lab) -> return $ currLab == lab
         (DArg _ _) -> return False
-        (DFun _) -> error "tried getting fun def"
+        (DFun _ _) -> error "tried getting fun def"
 
 getFnRetTypeFromBinding :: Ident -> GenM VType
 getFnRetTypeFromBinding idt = do
@@ -226,7 +224,7 @@ getFnRetTypeFromBinding idt = do
   case M.lookup idt (globalBindings st) of
     Just (sloc : _) ->
       case M.lookup sloc (defs st) of
-        Just (DFun tp) -> return $ toVType tp
+        Just (DFun tp _) -> return $ toVType tp
         _else -> error $ "fn def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
     Just [] -> error "defs vs. bindings inconsistency"
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)

@@ -43,6 +43,7 @@ import System.IO (hPutStrLn)
 import TransformAbsToFIR (genFIR)
 import TypeCheckLatte
 import Prelude hiding (lookup)
+import SSAToLLVM
 
 type Err = Either String
 
@@ -382,6 +383,9 @@ compileProgram v tree = do
   ssa@(SSA ssacfgs) <- toSSA fircfgs
   putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
   when (v == 3) $ putStrLn $ toDot ssacfgs
+  ir <- toLLVM ssa
+  putStrV v $ "[LLVMIR]\n" ++ show ir
+  when (v == 4) $ mapM_ putStrLn ir
 
 usage :: IO ()
 usage = do
@@ -394,7 +398,8 @@ usage = do
         "  -s (files)      Silent mode. Parse content of files silently.",
         "  -g (files)      Print CFG in DOT format.",
         "  -f (files)      Print FIRCFG in DOT format.",
-        "  -S (files)      Print SSACFG in DOT format."
+        "  -S (files)      Print SSACFG in DOT format.",
+        "  -l (files)      Emit LLVM IR."
       ]
 
 main :: IO ()
@@ -407,4 +412,5 @@ main = do
     "-g" : fs -> mapM_ (runFile 1 pProgram) fs
     "-f" : fs -> mapM_ (runFile 2 pProgram) fs
     "-S" : fs -> mapM_ (runFile 3 pProgram) fs
+    "-l" : fs -> mapM_ (runFile 4 pProgram) fs
     fs -> mapM_ (runFile 5 pProgram) fs

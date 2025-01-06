@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE CPP #-}
 
 module FIR where
 
@@ -7,13 +8,14 @@ import CFGDefs (Label)
 import Common (Printable (printCode))
 import Data.Map (Map)
 
-data VType = VInt | VStr | VBool | VVoid deriving (Eq, Ord)
+data VType = VInt | VStr | VBool | VVoid | VLabel deriving (Eq, Ord)
 
 instance Show VType where
-  show VInt = "I"
-  show VStr = "S"
-  show VBool = "B"
-  show VVoid = "V"
+  show VInt = "i32"
+  show VStr = "i8*"
+  show VBool = "i1"
+  show VVoid = "void"
+  show VLabel = "label"
 
 data Addr = Cmp Int | Var Ident Int (Maybe Int) | ArgVar Ident | Temp Int deriving (Eq, Ord)
 
@@ -43,8 +45,13 @@ data Loc
 
 instance Show Loc where
   show (LImmInt i) = show i
-  show (LImmBool b) = show b
+  show (LImmBool True) = "1"
+  show (LImmBool False) = "0"
+#if DEBUG
   show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
+#else
+  show (LAddr _ addr) = show addr
+#endif
   show (LLabel lab) = "%" ++ maybe "?" show lab
   show (LString s) = '\"' : s ++ "\""
 
@@ -54,7 +61,7 @@ typeOfLoc l = case l of
   (LImmBool _) -> VBool
   (LAddr tp _) -> tp
   (LString _) -> VStr
-  (LLabel _) -> error "request type of label?"
+  (LLabel _) -> VLabel
 
 toVType :: Type -> VType
 toVType tp =
@@ -108,7 +115,6 @@ data Op2
   | Mul
   | Div
   | Mod
-  | Load
   | CondBr
   | LTh
   | LEq

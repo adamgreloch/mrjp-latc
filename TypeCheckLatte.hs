@@ -429,7 +429,7 @@ envToTypeCheckInfo tenv = do
         sloc = M.size (globalBindings tc)
         dtp = case vpt of
           TVar _ tp -> DVar tp (BlockLabel 0)
-          TFn _ tp _ -> DFun tp
+          TFn _ tp args -> DFun tp (map (\(Arg _ tp idt) -> (tp, idt)) args)
 
 typeCheckProgram :: Int -> Program -> IO TypeCheckInfo
 typeCheckProgram v (Program _ tds) = do

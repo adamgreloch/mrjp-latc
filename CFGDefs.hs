@@ -4,9 +4,10 @@ import AbsLatte (Ident (..), Type)
 import Data.List (find)
 import Data.Map qualified as M
 
-data Label = BlockLabel Int | JumpLabel Int deriving (Eq, Ord)
+data Label = Entry | BlockLabel Int | JumpLabel Int deriving (Eq, Ord)
 
 instance (Show Label) where
+  show Entry = "Entry"
   show (BlockLabel n) = "L" ++ show n
   show (JumpLabel n) = "J" ++ show n
 
@@ -29,7 +30,7 @@ instance Show Node where
 
 type Bindings = M.Map Ident [SLoc]
 
-data Def = DArg Type Label | DVar Type Label | DFun Type deriving (Show)
+data Def = DArg Type Label | DVar Type Label | DFun Type [(Type, Ident)] deriving (Show)
 
 type Defs = M.Map SLoc Def
 

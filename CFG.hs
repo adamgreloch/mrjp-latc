@@ -64,7 +64,7 @@ data Env = Env
 type CFGM a = StateT Store (ReaderT Env IO) a
 
 debugPrint :: String -> CFGM ()
-debugPrint s = when True $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
+debugPrint s = when False $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
 
 freshLabel :: CFGM Label
 freshLabel = do
