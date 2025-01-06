@@ -422,7 +422,7 @@ envToTypeCheckInfo tenv = do
     addVPTypeToInfo :: (Ident, VPType) -> TypeCheckInfo -> TypeCheckInfo
     addVPTypeToInfo (idt, vpt) tc =
       tc
-        { globalBindings = M.insert idt sloc (globalBindings tc),
+        { globalBindings = M.insert idt [sloc] (globalBindings tc),
           globalDefs = M.insert sloc dtp (globalDefs tc)
         }
       where

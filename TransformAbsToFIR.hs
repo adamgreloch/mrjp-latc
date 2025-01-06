@@ -6,10 +6,12 @@ import Control.Monad (unless)
 import Control.Monad.State
   ( MonadState (get, put),
     State,
+    gets,
     modify,
     runState,
   )
 import Data.Map qualified as M
+import Data.Set qualified as S
 import FIR
 import GHC.Base (assert)
 
@@ -105,29 +107,66 @@ genExp (EOr _ e1 e2) = do
   emit $ Bin Or resLoc loc1 loc2
   return resLoc
 
+wasDefinedInBlock :: Ident -> GenM Bool
+wasDefinedInBlock idt = do
+  st <- get
+  case M.lookup (blockLabel st) (definedAlready st) of
+    Nothing -> return False
+    Just s -> return $ S.member idt s
+
+defineInBlock :: Ident -> GenM ()
+defineInBlock idt = do
+  st <- get
+  currLab <- gets blockLabel
+  let da = definedAlready st
+  let s = M.findWithDefault S.empty currLab da
+  put (st {definedAlready = M.insert currLab (S.insert idt s) da})
+
 -- TODO cleanup these accessors
 getVarLocFromBinding :: Ident -> GenM Loc
 getVarLocFromBinding idt = do
   st <- get
   case M.lookup idt (blockBindings st) of
-    Just sloc ->
-      case M.lookup sloc (defs st) of
-        -- we are before SSA convertion, so the variable is uncounted (Nothing)
-        Just (DVar tp lab) -> return (LAddr (toVType tp) (Var idt lab Nothing))
-        Just (DArg tp lab) -> return (LAddr (toVType tp) (ArgVar idt))
-        Just (DFun _) -> error "tried getting fun loc"
-        Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
+    Just slocs -> findProperLoc slocs
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
+  where
+    findProperLoc :: [SLoc] -> GenM Loc
+    findProperLoc (sloc : t) = do
+      st <- get
+      case M.lookup sloc (defs st) of
+        -- we are before SSA conversion, so the variable is uncounted (Nothing)
+        Just def -> do
+          res1 <- wasDefinedInBlock idt
+          res2 <- fromThisLab def
+          if not res2 || res1
+            then defToLoc def
+            else findProperLoc t
+        Nothing -> error "def not found, inconsistency"
+    findProperLoc [] = error "proper loc not found"
+
+    defToLoc :: Def -> GenM Loc
+    defToLoc def = case def of
+      (DVar tp lab) -> return (LAddr (toVType tp) (Var idt lab Nothing))
+      (DArg tp lab) -> return (LAddr (toVType tp) (ArgVar idt))
+      (DFun _) -> error "tried getting fun def"
+    fromThisLab :: Def -> GenM Bool
+    fromThisLab def = do
+      currLab <- gets blockLabel
+      case def of
+        (DVar _ lab) -> return $ currLab == lab
+        (DArg _ lab) -> return $ currLab == lab
+        (DFun _) -> error "tried getting fun def"
 
 getFnRetTypeFromBinding :: Ident -> GenM VType
 getFnRetTypeFromBinding idt = do
   st <- get
   -- NOTE: valid only when fn declarations cannot be nested
   case M.lookup idt (globalBindings st) of
-    Just sloc ->
+    Just (sloc : _) ->
       case M.lookup sloc (defs st) of
         Just (DFun tp) -> return $ toVType tp
         Just (DVar {}) -> error "var instead of fun"
+        -- Just [] -> error "impossible"
         Nothing -> error $ "def not found: " ++ show sloc ++ "\nall defs: " ++ show (defs st)
     Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
 
@@ -142,11 +181,13 @@ genStmts (Decl _ tp items : t) = do
     vtp = toVType tp
     declareItem :: Item -> GenM ()
     declareItem (NoInit _ idt) = do
+      defineInBlock idt
       iloc <- getVarLocFromBinding idt
       emit $ Unar Asgn iloc (initValue vtp)
     declareItem (Init _ idt e) = do
-      iloc <- getVarLocFromBinding idt
       loc <- genExp e
+      defineInBlock idt
+      iloc <- getVarLocFromBinding idt
       emit $ Unar Asgn iloc loc
 genStmts (Ass _ idt e : t) = do
   loc <- genExp e
@@ -206,7 +247,7 @@ withJumpLabel bb =
 genBB :: BB' [Stmt] -> GenM (BB' Code)
 genBB bb = do
   -- FIXME move to Env?
-  modify (\st -> st {blockBindings = bindings bb})
+  modify (\st -> st {blockBindings = bindings bb, blockLabel = label bb})
   genStmts (reverse (stmts bb))
   stmts <- takeCode
   return $ withJumpLabel $ bb {stmts}
@@ -226,7 +267,9 @@ genFIR (cfgs, info) =
           lastTemp = 0,
           code = [],
           locs = M.empty,
+          blockLabel = 0,
           blockBindings = M.empty,
           globalBindings = cfgInfoBindings info,
-          defs = cfgInfoDefs info
+          defs = cfgInfoDefs info,
+          definedAlready = M.empty
         }

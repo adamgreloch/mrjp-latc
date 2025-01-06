@@ -331,15 +331,20 @@ addBinding :: Def -> Ident -> Type -> CFGM Env
 addBinding def idt tp = do
   sloc <- newSLoc
   currLab <- asks currLabel
-  debugPrint $ "addBinding " ++ show idt ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")"
   modify
     ( \st ->
         st
           { cfgDefs = M.insert sloc def (cfgDefs st)
           }
     )
+  st <- get
+  debugPrint $ "addBinding " ++ show idt ++ "(sloc " ++ show sloc ++ ") " ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")\n" ++ show (cfgDefs st)
   env <- ask
-  return env {currBindings = M.insert idt sloc (currBindings env)}
+  return env {currBindings = M.alter (f sloc) idt (currBindings env)}
+    where
+      -- TODO could be done better
+      f sloc Nothing = Just [sloc]
+      f sloc (Just l) = Just (sloc : l)
 
 bindVar :: Ident -> Type -> CFGM Env
 bindVar idt tp = do

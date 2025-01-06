@@ -376,10 +376,10 @@ compileProgram v tree = do
   cfgs <- genCFGs tcinfo tree
   putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = genFIR cfgs
-  ssacfgs <- toSSA fircfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
   when (v == 1) $ putStrLn $ toDot cfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
+  ssacfgs <- toSSA fircfgs
   putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
   when (v == 3) $ putStrLn $ toDot ssacfgs
 

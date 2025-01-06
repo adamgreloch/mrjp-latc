@@ -23,7 +23,7 @@ instance Show Node where
   show (FnBlock l) = "L" ++ show l
   show (FnRet (Ident s)) = "FnRet_" ++ s
 
-type Bindings = M.Map Ident SLoc
+type Bindings = M.Map Ident [SLoc]
 
 data Def = DArg Type Label | DVar Type Label | DFun Type deriving (Show)
 

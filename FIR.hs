@@ -11,6 +11,7 @@ import Control.Monad.State
   )
 import Data.Map (Map)
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
 
 data VType = VInt | VStr | VBool | VVoid deriving (Eq, Ord)
 
@@ -104,9 +105,19 @@ data FIRStore = FIRStore_
     locs :: Map Ident Loc,
     lastTemp :: Int,
     lastLabel :: Label,
+    blockLabel :: Label,
     blockBindings :: Bindings,
     globalBindings :: Bindings,
-    defs :: Defs
+    defs :: Defs,
+
+    -- | helps retrieving appropriate binding in cases like
+    -- int a = 2; // a_1
+    -- {
+    --   a = a + 1 // this is still a_1
+    --   int a = 2; // a_2
+    --   ...
+    -- }
+    definedAlready :: Map Label (Set Ident) 
   }
   deriving (Show)
 
