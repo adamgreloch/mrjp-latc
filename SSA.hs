@@ -271,7 +271,7 @@ isArgOrArgVar (ArgVar {}) = True
 isArgOrArgVar (Var {}) = True
 isArgOrArgVar _ = False
 
-maybeGenPhi :: Loc -> GenM (Loc, [Instr])
+maybeGenPhi :: Loc -> GenM Loc
 maybeGenPhi loc@(LAddr tp addr) =
   case addr of
     (ArgVar idt) -> do
@@ -281,25 +281,25 @@ maybeGenPhi loc@(LAddr tp addr) =
         Nothing -> do
           loc' <- freshNum loc
           assign (locToVarID loc') (ELoc loc')
-          return (loc', [])
+          return loc'
         Just e -> exprToRet e
     (Var {}) -> do
       do
         e <- readVariable tp (locToVarID loc)
         exprToRet e
-    _else -> return (loc, [])
+    _else -> return loc
   where
     vi@(idt, src) = addrToVarID addr
 
-    exprToRet :: Expr -> GenM (Loc, [Instr])
+    exprToRet :: Expr -> GenM Loc
     exprToRet e = case e of
-      ELoc loc' -> return (loc', [])
+      ELoc loc' -> return loc'
       EPhi num pops -> do
         let loc' = LAddr tp (Var idt src (Just num))
         assign (locToVarID loc) (ELoc loc')
         debugPrint $ "genPhi: " ++ show loc' ++ " " ++ show pops
-        return (loc', [Phi loc' (map ephiToPhi pops)])
-maybeGenPhi loc = return (loc, [])
+        return loc'
+maybeGenPhi loc = return loc
 
 addr :: Loc -> Addr
 addr (LAddr _ addr) = addr
@@ -322,13 +322,17 @@ ssaInstr (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
         _ephi -> ssaInstr t
 ssaInstr (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "ssaInstr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
-  (loc2', ops2) <- maybeGenPhi loc2
-  (loc3', ops3) <- maybeGenPhi loc3
+  loc2' <- maybeGenPhi loc2
+  loc3' <- maybeGenPhi loc3
   t' <- ssaInstr t
   return $ Bin op loc1 loc2' loc3' : t'
+ssaInstr (Call loc1 idt locs : t) = do
+  locs' <- mapM maybeGenPhi locs
+  t' <- ssaInstr t
+  return $ Call loc1 idt locs' : t'
 ssaInstr (IRet loc : t) = do
   debugPrint $ "IRet: " ++ show loc
-  (loc', ops) <- maybeGenPhi loc
+  loc' <- maybeGenPhi loc
   t' <- ssaInstr t
   return $ IRet loc' : t'
 ssaInstr (instr : t) = do
