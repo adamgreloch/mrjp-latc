@@ -30,7 +30,7 @@ type PhiOperand = (Label, Expr)
 
 data Expr
   = ELoc Loc
-  | EPhi Int [PhiOperand]
+  | EPhi Loc [PhiOperand]
   deriving (Show)
 
 data Env = Env
@@ -208,7 +208,7 @@ addPhiOperands tp vi preds (EPhi num _) = do
 addPhiOperands _ _ _ (ELoc _) = error "expected EPhi"
 
 readVariableRec :: VType -> VarID -> SSAM Expr
-readVariableRec tp vi = do
+readVariableRec tp vi@(idt, src) = do
   currLab <- asks currLabel
   debugPrint $ "readVariableRec: " ++ printVi vi
   labPreds <- getPreds currLab
@@ -222,7 +222,8 @@ readVariableRec tp vi = do
     preds -> do
       debugPrint $ "readVariableRec: put empty phi in " ++ printVi vi
       num <- freshVarNum vi
-      let phi = EPhi num []
+      let loc = LAddr tp (Var idt src (Just num))
+      let phi = EPhi loc []
       initPhi tp vi num
       assign vi phi
       phi' <- addPhiOperands tp vi preds phi
@@ -231,7 +232,7 @@ readVariableRec tp vi = do
 
 ephiToPhi :: PhiOperand -> (Label, Loc)
 ephiToPhi (lab, ELoc loc) = (lab, loc)
-ephiToPhi (_, _) = error "not eloc"
+ephiToPhi (lab, EPhi loc _) = (lab, loc)
 
 maybeGenPhi :: Loc -> SSAM Loc
 maybeGenPhi loc@(LAddr tp addr) =
@@ -251,13 +252,10 @@ maybeGenPhi loc@(LAddr tp addr) =
         exprToRet e
     _else -> return loc
   where
-    (idt, src) = addrToVarID addr
-
     exprToRet :: Expr -> SSAM Loc
     exprToRet e = case e of
       ELoc loc' -> return loc'
-      EPhi num pops -> do
-        let loc' = LAddr tp (Var idt src (Just num))
+      EPhi loc' pops -> do
         assign (locToVarID loc) (ELoc loc')
         debugPrint $ "genPhi: " ++ show loc' ++ " " ++ show pops
         return loc'
@@ -319,8 +317,8 @@ ssaBB bb = do
       modify (\st -> st {beenIn = M.insert (label bb) stmts' (beenIn st)})
       return bb {stmts = reverse stmts'}
 
--- TODO propagate assignment in case of one pop? maybe leave it to copy
--- propagation?
+-- TODO remove trivial phis like Phi %a_1_4 [(L8, %a_1_3), (L10, %a_1_3)]
+-- propagate assignment in case of one pop? maybe leave it to copy propagation?
 nonTrivialPhiOrNop :: Loc -> [(Label, Loc)] -> [Instr]
 nonTrivialPhiOrNop phiLoc pops =
   case filter isNotSame pops of
