@@ -209,13 +209,15 @@ initTEnv =
             ("printInt", Void nop, [Arg nop (Int nop) (Ident "v")]),
             ("error", Void nop, []),
             ("readInt", Int nop, []),
-            ("readString", Str nop, [])
+            ("readString", Str nop, []),
+            ("strcmp", Int nop, [s 1, s 2])
           ]
     }
   where
     addPredefinedFun :: (String, Type, [Arg]) -> Map Ident VPType -> Map Ident VPType
     addPredefinedFun (fnname, ret, args) = M.insert (Ident fnname) (TFn nop ret args)
     nop = BNFC'NoPosition
+    s n = Arg nop (Str nop) (Ident $ "s" ++ show n)
 
 lookup :: Ident -> TEnv -> Maybe VPType
 lookup idt tenv = M.lookup idt (mp tenv)

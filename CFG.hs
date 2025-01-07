@@ -326,7 +326,7 @@ procStmts (stmt : t) = do
               ( case whenExpr of
                   WhenTrue -> lab1
                   WhenFalse -> lab2
-                  _else -> error "huh"
+                  WhenDone -> lab2
               )
               whenExpr
             retLabs <- local (withLabel lab1) $ procStmts [inner]

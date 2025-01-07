@@ -369,12 +369,20 @@ run v p o s =
     Right tree -> do
       putStrV v "Parse Successful!"
       compileProgram v tree o
-      pid <- forkProcess (executeFile "llvm-as" True ["-o", o -<.> "bc", o] Nothing)
+      pid <- forkProcess (executeFile "llvm-as" True ["-o", o -<.> "bc_", o] Nothing)
       result <- getProcessStatus True False pid
       case result of
         Just (Exited ExitSuccess) ->
           putStrLn "LLVM bitcode generation successful"
-        _otherwise -> putStrLn "LLVM bitcode generation failed"
+        _otherwise -> do 
+          putStrLn "LLVM bitcode generation failed"
+          exitFailure
+      pid <- forkProcess (executeFile "llvm-link" True ["-o", o -<.> "bc", o -<.> "bc_", "./lib/runtime.ll"] Nothing)
+      result <- getProcessStatus True False pid
+      case result of
+        Just (Exited ExitSuccess) ->
+          putStrLn "LLVM linking successful"
+        _otherwise -> putStrLn "LLVM linking failed"
       return ()
   where
     ts = myLexer s
