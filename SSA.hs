@@ -320,15 +320,14 @@ updatePhisInSuccs = do
           Nothing -> return ()
           Just mp -> do
             currDefMp <- gets currDef
-            debugPrint $ "update succ:" ++ show succLab
+            debugPrint $ "update succ:" ++ show succLab ++ "\n\t" ++ show currDefMp
 
             let updatePhi vi (loc, pops) =
-                  let expr =
-                        fromMaybe (error "okay, now we have a problem") $
-                          M.lookup currLab $
+                  case M.lookup currLab $
                             fromMaybe (error "no def of var while successor has it in phi") $
-                              M.lookup vi currDefMp
-                   in (loc, M.insert currLab expr pops)
+                              M.lookup vi currDefMp of
+                              Just expr -> (loc, M.insert currLab expr pops)
+                              Nothing -> (loc, pops)
 
             let mp' = M.mapWithKey updatePhi mp
             modify (\st -> st {phis = M.insert succLab mp' phisMp})

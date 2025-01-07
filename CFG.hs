@@ -321,63 +321,81 @@ procStmts (stmt : t) = do
             lab1 <- freshLabel
             lab2 <- freshLabel
             addEdgeFromTo currLab lab1 WhenTrue
-            addEdgeFromTo
-              exprLab
-              ( case whenExpr of
-                  WhenTrue -> lab1
-                  WhenFalse -> lab2
-                  WhenDone -> lab2
-              )
-              whenExpr
+            _ <- case whenExpr of
+              WhenTrue -> addEdgeFromTo exprLab lab1 whenExpr
+              WhenFalse -> addEdgeFromTo exprLab lab2 whenExpr
+              _else -> return ()
+
+            -- WARN: lab1, lab2 may become invalid after procStmts call
+
             retLabs <- local (withLabel lab1) $ procStmts [inner]
 
             addEdgeFromTo currLab lab2 WhenFalse
             addEdgesFromTo retLabs lab2 WhenDone
             local (withLabel lab2) $ procStmts t
         )
-    (CondElse _ _ innerTrue innerFalse) -> do
-      addStmtToCurrBlock stmt
-      currLab <- endCurrBlock
-
-      lab1 <- freshLabel
-      addEdgeFromTo currLab lab1 WhenTrue
-      retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
-
-      lab2 <- freshLabel
-      addEdgeFromTo currLab lab2 WhenFalse
-      retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
-
-      let retLabs = retLabsTrue ++ retLabsFalse
-      debugPrint $ "CondElse retLabs=" ++ show retLabs
-      if null retLabs
-        then return []
-        else do
-          lab3 <- freshLabel
-          addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
-          local (withLabel lab3) $ procStmts t
-    (While _ _ loopBody) -> do
-      currLab <- endCurrBlock
-
-      lab1 <- freshLabel
+    (CondElse p e innerTrue innerFalse) -> do
+      ((whenExpr, exprLab), env', e') <- procExpr e
       local
-        (withLabel lab1)
+        (const env')
         ( do
-            addStmtToCurrBlock stmt
-            _ <- endCurrBlock
-            return ()
+            addStmtToCurrBlock (CondElse p e' innerTrue innerFalse)
+            currLab <- endCurrBlock
+
+            lab1 <- freshLabel
+            lab2 <- freshLabel
+
+            _ <- case whenExpr of
+              WhenTrue -> addEdgeFromTo exprLab lab1 whenExpr
+              WhenFalse -> addEdgeFromTo exprLab lab2 whenExpr
+              _else -> return ()
+
+            -- WARN: lab1, lab2 may become invalid after procStmts calls
+
+            addEdgeFromTo currLab lab1 WhenTrue
+            retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
+
+            addEdgeFromTo currLab lab2 WhenFalse
+            retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
+
+            let retLabs = retLabsTrue ++ retLabsFalse
+            debugPrint $ "CondElse retLabs=" ++ show retLabs
+            if null retLabs
+              then return []
+              else do
+                lab3 <- freshLabel
+                addEdgesFromTo (retLabsTrue ++ retLabsFalse) lab3 WhenDone
+                local (withLabel lab3) $ procStmts t
         )
+    (While p e loopBody) -> do
+      currLab <- endCurrBlock
+      lab0 <- freshLabel
 
-      addEdgeFromTo currLab lab1 WhenDone
+      addEdgeFromTo currLab lab0 WhenDone
+      ((whenExpr, exprLab), env', e') <- local (withLabel lab0) $ procExpr e
+      local
+        (const env')
+        ( do
+            addStmtToCurrBlock (While p e' loopBody)
+            whileLab <- endCurrBlock
 
-      lab2 <- freshLabel
-      addEdgeFromTo lab1 lab2 WhenTrue
-      retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
+            lab2 <- freshLabel
+            lab3 <- freshLabel
 
-      addEdgesFromTo retLabsDone lab1 WhenDone
+            _ <- case whenExpr of
+              WhenTrue -> addEdgeFromTo exprLab lab2 whenExpr
+              WhenFalse -> addEdgeFromTo exprLab lab3 whenExpr
+              _else -> return ()
 
-      lab3 <- freshLabel
-      addEdgeFromTo lab1 lab3 WhenFalse
-      local (withLabel lab3) $ procStmts t
+            addEdgeFromTo whileLab lab2 WhenTrue
+
+            retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
+
+            addEdgesFromTo retLabsDone lab0 WhenDone
+
+            addEdgeFromTo whileLab lab3 WhenFalse
+            local (withLabel lab3) $ procStmts t
+        )
     (Decl _ tp items) -> do
       env' <- readerSeq declareItem items
       addStmtToCurrBlock stmt
