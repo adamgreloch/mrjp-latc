@@ -49,7 +49,6 @@ data Store = Store
     lastDefNumInBlock :: Map VarID (Map Label Int),
     lastDefNum :: Map VarID Int,
     cfgs :: CFGsNoDefs' Code,
-    beenIn :: Map Label Code,
     phis :: Map Label (Map VarID (Loc, Map Label Expr))
   }
   deriving (Show)
@@ -113,7 +112,7 @@ freshVarNum vi = do
   let n = maybe 0 (+ 1) mln
   setLastNumInBlock vi n
   setLastNum vi n
-  debugPrint $ "freshVarNum: " ++ printVi vi ++ " -> " ++ show n
+  debugPrint $ "freshVarNum: " ++ printVi vi ++ "_" ++ "?" ++ " -> " ++ printVi vi ++ "_" ++ show n
   return n
 
 freshVar :: Addr -> SSAM Addr
@@ -152,6 +151,18 @@ getPreds lab = do
   where
     justBlocks :: [Node] -> [Label]
     justBlocks (FnBlock lab1 : t) = lab1 : justBlocks t
+    justBlocks (_ : t) = justBlocks t
+    justBlocks [] = []
+
+getSuccs :: Label -> SSAM [Label]
+getSuccs lab = do
+  cfg <- asks currCfg
+  case M.lookup lab cfg of
+    Just bb -> return $ justBlocks $ succs bb
+    Nothing -> error $ "no bb with this label " ++ show lab
+  where
+    justBlocks :: [(Node, When)] -> [Label]
+    justBlocks ((FnBlock lab1, _) : t) = lab1 : justBlocks t
     justBlocks (_ : t) = justBlocks t
     justBlocks [] = []
 
@@ -199,7 +210,6 @@ addPhiOperands tp vi preds (EPhi num _) = do
           ( do
               cfg <- asks currCfg
               let bb = fromMaybe (error "aa") $ M.lookup predLab cfg
-              _ <- ssaBB bb
               readVariable tp vi
           )
       writeToPhis vi predLab expr
@@ -238,6 +248,7 @@ maybeGenPhi :: Loc -> SSAM Loc
 maybeGenPhi loc@(LAddr tp addr) =
   case addr of
     (ArgVar _) -> do
+      debugPrint $ "argVar: " ++ show loc
       currLab <- asks currLabel
       cd <- lookupCurrDef (addrToVarID addr) currLab
       case cd of
@@ -264,7 +275,7 @@ maybeGenPhi loc = return loc
 ssaCode :: Code -> SSAM Code
 ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
   loc1' <- freshNum loc1
-  debugPrint $ "ssaInstr: " ++ show loc1' ++ " <- " ++ show loc2
+  debugPrint $ "SSA Instr: " ++ show loc1' ++ " <- " ++ show loc2
   if not $ isVar loc2
     then do
       assign (locToVarID loc1') (ELoc loc2)
@@ -277,7 +288,7 @@ ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
           ssaCode t
         _ephi -> ssaCode t
 ssaCode (Bin op loc1 loc2 loc3 : t) = do
-  debugPrint $ "ssaInstr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
+  debugPrint $ "SSA Instr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
   loc1' <- maybeGenPhi loc1
   loc2' <- maybeGenPhi loc2
   loc3' <- maybeGenPhi loc3
@@ -288,7 +299,7 @@ ssaCode (Call loc1 idt locs : t) = do
   t' <- ssaCode t
   return $ Call loc1 idt locs' : t'
 ssaCode (IRet loc : t) = do
-  debugPrint $ "IRet: " ++ show loc
+  debugPrint $ "SSA IRet: " ++ show loc
   loc' <- maybeGenPhi loc
   t' <- ssaCode t
   return $ IRet loc' : t'
@@ -297,26 +308,43 @@ ssaCode (instr : t) = do
   return (instr : t')
 ssaCode [] = return []
 
+-- | updates phis in case of loop
+updatePhisInSuccs :: SSAM ()
+updatePhisInSuccs = do
+  currLab <- asks currLabel
+  succs <- getSuccs currLab
+  mapM_
+    ( \succLab -> do
+        phisMp <- gets phis
+        case M.lookup succLab phisMp of
+          Nothing -> return ()
+          Just mp -> do
+            currDefMp <- gets currDef
+            debugPrint $ "update succ:" ++ show succLab
+
+            let updatePhi vi (loc, pops) =
+                  let expr =
+                        fromMaybe (error "okay, now we have a problem") $
+                          M.lookup currLab $
+                            fromMaybe (error "no def of var while successor has it in phi") $
+                              M.lookup vi currDefMp
+                   in (loc, M.insert currLab expr pops)
+
+            let mp' = M.mapWithKey updatePhi mp
+            modify (\st -> st {phis = M.insert succLab mp' phisMp})
+    )
+    succs
+
 ssaBB :: BB' Code -> SSAM (BB' Code)
-ssaBB bb = do
-  bi <- gets beenIn
-  case M.lookup (label bb) bi of
-    Just stmts -> do
-      debugPrint "== ssaBB : just ret =="
-      p <- gets phis
-      debugPrint $ "done L" ++ show (label bb) ++ " phis:\n\t" ++ show p
-      return bb {stmts = reverse stmts}
-    Nothing -> do
-      stmts' <-
-        local
-          (withLabel (label bb))
-          ( do
-              debugPrint "== ssaBB : ssaInstr =="
-              ssaCode (reverse $ stmts bb)
-          )
-      debugPrint $ "beenIn" ++ show (label bb)
-      modify (\st -> st {beenIn = M.insert (label bb) stmts' (beenIn st)})
-      return bb {stmts = reverse stmts'}
+ssaBB bb =
+  local
+    (withLabel (label bb))
+    ( do
+        debugPrint "======== ssaBB : begin ========"
+        stmts' <- ssaCode (reverse $ stmts bb)
+        updatePhisInSuccs
+        return bb {stmts = reverse stmts'}
+    )
 
 -- TODO remove trivial phis like Phi %a_1_4 [(L8, %a_1_3), (L10, %a_1_3)]
 -- propagate assignment in case of one pop? maybe leave it to copy propagation?
@@ -326,9 +354,10 @@ nonTrivialPhiOrNop phiLoc pops =
     [] -> []
     pops' -> [Phi phiLoc pops']
   where
-    isNotSame (_,_) = True
-    -- isNotSame :: (Label, Loc) -> Bool
-    -- isNotSame (_, loc) = loc /= phiLoc
+    isNotSame (_, _) = True
+
+-- isNotSame :: (Label, Loc) -> Bool
+-- isNotSame (_, loc) = loc /= phiLoc
 
 emitPhi :: BB' Code -> SSAM (BB' Code)
 emitPhi bb = do
@@ -389,7 +418,6 @@ toSSA (cfgs, info) = do
         { currDef = M.empty,
           lastDefNumInBlock = M.empty,
           lastDefNum = M.empty,
-          beenIn = M.empty,
           phis = M.empty,
           cfgs
         }
