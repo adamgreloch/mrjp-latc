@@ -253,7 +253,7 @@ printLocType :: Loc -> String
 printLocType = show . typeOfLoc
 
 printArgs :: [(Type, Ident)] -> String
-printArgs l = concat (commas $ map (\(tp, Ident s) -> printType tp % "%" ++ s) l)
+printArgs l = concat (commas $ map (\(tp, Ident s) -> printType tp % "%" ++ s ++ "_0_0") l)
 
 printArgTypes :: [(Type, Ident)] -> String
 printArgTypes l = concat (commas $ map (\(tp, Ident s) -> printType tp) l)

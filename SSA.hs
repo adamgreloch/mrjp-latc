@@ -244,19 +244,21 @@ ephiToPhi :: PhiOperand -> (Label, Loc)
 ephiToPhi (lab, ELoc loc) = (lab, loc)
 ephiToPhi (lab, EPhi loc _) = (lab, loc)
 
-maybeGenPhi :: Loc -> SSAM Loc
-maybeGenPhi loc@(LAddr tp addr) =
+getUpdatedLoc :: Loc -> SSAM Loc
+getUpdatedLoc loc@(LAddr tp addr) =
   case addr of
-    (ArgVar _) -> do
+    (ArgVar idt) -> do
       debugPrint $ "argVar: " ++ show loc
       currLab <- asks currLabel
       cd <- lookupCurrDef (addrToVarID addr) currLab
       case cd of
         Nothing -> do
-          loc' <- freshNum loc
-          assign (locToVarID loc') (ELoc loc')
-          return loc'
-        Just e -> exprToRet e
+          -- loc' <- freshNum loc
+          -- assign (locToVarID loc') (ELoc loc')
+          -- TODO args may never get generated to be on lhs
+          -- which simplifies things
+          return (LAddr tp (Var idt 0 (Just 0)))
+        Just e -> readVariable tp (locToVarID loc) >>= exprToRet
     (Var {}) -> do
       do
         e <- readVariable tp (locToVarID loc)
@@ -270,7 +272,7 @@ maybeGenPhi loc@(LAddr tp addr) =
         assign (locToVarID loc) (ELoc loc')
         debugPrint $ "genPhi: " ++ show loc' ++ " " ++ show pops
         return loc'
-maybeGenPhi loc = return loc
+getUpdatedLoc loc = return loc
 
 ssaCode :: Code -> SSAM Code
 ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
@@ -289,18 +291,18 @@ ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
         _ephi -> ssaCode t
 ssaCode (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "SSA Instr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
-  loc1' <- maybeGenPhi loc1
-  loc2' <- maybeGenPhi loc2
-  loc3' <- maybeGenPhi loc3
+  loc1' <- getUpdatedLoc loc1
+  loc2' <- getUpdatedLoc loc2
+  loc3' <- getUpdatedLoc loc3
   t' <- ssaCode t
   return $ Bin op loc1' loc2' loc3' : t'
 ssaCode (Call loc1 idt locs : t) = do
-  locs' <- mapM maybeGenPhi locs
+  locs' <- mapM getUpdatedLoc locs
   t' <- ssaCode t
   return $ Call loc1 idt locs' : t'
 ssaCode (IRet loc : t) = do
   debugPrint $ "SSA IRet: " ++ show loc
-  loc' <- maybeGenPhi loc
+  loc' <- getUpdatedLoc loc
   t' <- ssaCode t
   return $ IRet loc' : t'
 ssaCode (instr : t) = do

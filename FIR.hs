@@ -29,7 +29,7 @@ instance Show Addr where
       ++ "_"
       ++ maybe "?" show num
   show (ArgVar (Ident s)) =
-    "%" ++ s
+    "%" ++ s ++ "_0_0"
   show (Temp i) = "%t" ++ show i
 
 data Loc
