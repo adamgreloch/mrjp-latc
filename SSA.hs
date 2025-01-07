@@ -325,8 +325,9 @@ nonTrivialPhiOrNop phiLoc pops =
     [] -> []
     pops' -> [Phi phiLoc pops']
   where
-    isNotSame :: (Label, Loc) -> Bool
-    isNotSame (_, loc) = loc /= phiLoc
+    isNotSame (_,_) = True
+    -- isNotSame :: (Label, Loc) -> Bool
+    -- isNotSame (_, loc) = loc /= phiLoc
 
 emitPhi :: BB' Code -> SSAM (BB' Code)
 emitPhi bb = do

@@ -36,14 +36,20 @@ import LexLatte (Token, mkPosToken)
 import ParLatte (myLexer, pProgram)
 import PrintLatte (printTree)
 import SSA
+import SSAToLLVM
 import SkelLatte ()
 import System.Environment (getArgs)
-import System.Exit (exitFailure)
+import System.Exit (ExitCode (ExitSuccess), exitFailure)
 import System.IO (hPutStrLn)
+import System.Posix
+    ( ProcessStatus(Exited),
+      forkProcess,
+      getProcessStatus,
+      executeFile )
 import TransformAbsToFIR (genFIR)
 import TypeCheckLatte
 import Prelude hiding (lookup)
-import SSAToLLVM
+import System.FilePath ((-<.>), replaceFileName, takeFileName)
 
 type Err = Either String
 
@@ -348,10 +354,12 @@ interpret v p = do
       putStrV v (show st)
 
 runFile :: Verbosity -> ParseFun Program -> FilePath -> IO ()
-runFile v p f = putStrV v f >> readFile f >>= run v p
+runFile v p f = putStrV v f >> readFile f >>= run v p o
+  where
+    o = replaceFileName f (takeFileName f -<.> "ll")
 
-run :: Verbosity -> ParseFun Program -> String -> IO ()
-run v p s =
+run :: Verbosity -> ParseFun Program -> FilePath -> String -> IO ()
+run v p o s =
   case p ts of
     Left err -> do
       hPutStrLn stderr ("ERROR\n" ++ err)
@@ -360,7 +368,14 @@ run v p s =
       exitFailure
     Right tree -> do
       putStrV v "Parse Successful!"
-      compileProgram v tree
+      compileProgram v tree o
+      pid <- forkProcess (executeFile "llvm-as" True ["-o", o -<.> "bc", o] Nothing)
+      result <- getProcessStatus True False pid
+      case result of
+        Just (Exited ExitSuccess) ->
+          putStrLn "LLVM bitcode generation successful"
+        _otherwise -> putStrLn "LLVM bitcode generation failed"
+      return ()
   where
     ts = myLexer s
     showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
@@ -368,8 +383,8 @@ run v p s =
 -- instance (Show (FIRTranslationError' a)) where
 --   show _ = ""
 
-compileProgram :: Int -> Program -> IO ()
-compileProgram v tree = do
+compileProgram :: Int -> Program -> FilePath -> IO ()
+compileProgram v tree o = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   tcinfo <- typeCheckProgram v tree
@@ -386,6 +401,8 @@ compileProgram v tree = do
   ir <- toLLVM ssa
   putStrV v $ "[LLVMIR]\n" ++ show ir
   when (v == 4) $ mapM_ putStrLn ir
+  writeFile o ""
+  mapM_ (\s -> appendFile o (s ++ "\n")) ir
 
 usage :: IO ()
 usage = do
@@ -407,7 +424,7 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    [] -> getContents >>= run 5 pProgram
+    -- [] -> getContents >>= run 5 pProgram
     "-s" : fs -> mapM_ (runFile 0 pProgram) fs
     "-g" : fs -> mapM_ (runFile 1 pProgram) fs
     "-f" : fs -> mapM_ (runFile 2 pProgram) fs

@@ -103,7 +103,7 @@ irInstr (Bin CondBr loc1 loc2 loc3) =
 irInstr (Bin op loc1 loc2 loc3) =
   emit $ show loc1 %= op2ToLLVM op % printLocWithType loc2 %> show loc3
 irInstr (Phi loc pops) =
-  emit $ show loc %= "phi" % printLocType loc % "[" ++ concat (commas $ map (\(lab, loc) -> show loc ++ ":" % "%" ++ show lab) pops) ++ "]"
+  emit $ show loc %= "phi" % printLocType loc % concat (commas $ map (\(lab, loc) -> "[" % show loc ++ "," % "%" ++ show lab % "]") pops)
 irInstr _ = return ()
 
 irBB :: BB' Code -> IRM ()
@@ -128,6 +128,7 @@ printArgTypes l = concat (commas $ map (\(tp, Ident s) -> printType tp) l)
 
 irCFGs :: CFGsNoDefs' Code -> IRM ()
 irCFGs cfgs = do
+  emit "target triple = \"x86_64-pc-linux-gnu\""
   let kv = M.toList cfgs
   mapM_
     ( \(fidt@(Ident fns), bb) -> do
