@@ -20,7 +20,6 @@ import GHC.Base (assert)
 data FIRStore = FIRStore_
   { code :: Code,
     locs :: Map Ident Loc,
-    lastJumpLabel :: Label,
     lastTemp :: Int,
     blockLabel :: Label,
     blockBindings :: Bindings,
@@ -63,16 +62,6 @@ freshTemp = do
   put (st {lastTemp = fresh})
   return (Temp fresh)
 
-freshJumpLabel :: GenM Label
-freshJumpLabel = do
-  st <- get
-  case lastJumpLabel st of
-    JumpLabel n -> do
-      let fresh = JumpLabel (n + 1)
-      put (st {lastJumpLabel = fresh})
-      return fresh
-    _else -> error "why"
-
 genExp :: Expr -> GenM Loc
 genExp (EVar _ idt) = getVarLocFromBinding idt
 genExp (ELitInt _ n) = return (LImmInt (fromIntegral n))
@@ -98,7 +87,6 @@ genExp (AbsLatte.Not _ e) = do
   let retLoc = LAddr (typeOfLoc loc) tmp
   emit $ Bin Eq retLoc loc (LImmBool False)
   return retLoc
-
 genExp (EAdd _ e1 addOp e2) = do
   loc1 <- genExp e1
   loc2 <- genExp e2
@@ -121,7 +109,7 @@ genExp (EMul _ e1 mulOp e2) = do
   return resLoc
   where
     op = case mulOp of
-      (Times _) -> Add
+      (Times _) -> Mul
       (AbsLatte.Div _) -> FIR.Div
       (AbsLatte.Mod _) -> FIR.Mod
 genExp (ERel _ e1 relOp e2) = do
@@ -139,32 +127,8 @@ genExp (ERel _ e1 relOp e2) = do
       GE _ -> GEq
       EQU _ -> Eq
       NE _ -> NEq
-
--- For short-circuiting purposes, meeting LLVM SSA requirements and leaving
--- CFG at all readable the following compromise has been made: the BB
--- is identified with `BlockLabel` labels and it can nest blocks
--- marked with `JumpLabel`. These blocks are created in EAnd and EOr generators
--- below and are ignored by CFG. We also put phis by hand since it is easy.
--- Creating a new BB just to short-circuit would make things too messy.
-genExp (EAnd _ e1 e2) = genShortCircuit e1 e2 True
-genExp (EOr _ e1 e2) = genShortCircuit e1 e2 False
-
-genShortCircuit :: Expr -> Expr -> Bool -> GenM Loc
-genShortCircuit e1 e2 nextIfTrue = do
-  blockLab <- gets blockLabel
-  loc1 <- genExp e1
-  labNext <- freshJumpLabel
-  labSkip <- freshJumpLabel
-  let (onTrue, onFalse) = if nextIfTrue then (labNext, labSkip) else (labSkip, labNext)
-  emit $ Bin CondBr loc1 (LLabel (Just onTrue)) (LLabel (Just onFalse))
-  emit $ ILabel labNext
-  loc2 <- genExp e2
-  emit $ Br (LLabel (Just labSkip))
-  emit $ ILabel labSkip
-  tmp <- freshTemp
-  let resLoc = LAddr VBool tmp
-  emit $ Phi resLoc [(blockLab, loc1), (labNext, loc2)]
-  return resLoc
+genExp (EAnd {}) = error "should be handled by cfg"
+genExp (EOr {}) = error "should be handled by cfg"
 
 wasDefinedInBlock :: Ident -> GenM Bool
 wasDefinedInBlock idt = do
@@ -187,7 +151,7 @@ getVarLocFromBinding idt = do
   st <- get
   case M.lookup idt (blockBindings st) of
     Just slocs -> findProperLoc slocs
-    Nothing -> error $ "block binding not found: " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
+    Nothing -> error $ "block binding not found for " ++ show (blockLabel st) ++ ": " ++ show idt ++ "\nall bindings: " ++ show (blockBindings st)
   where
     findProperLoc :: [SLoc] -> GenM Loc
     findProperLoc (sloc : t) = do
@@ -322,8 +286,7 @@ genFIR (cfgs, info) =
     m = genCFGs cfgs
     initStore =
       FIRStore_
-        { lastJumpLabel = JumpLabel 0,
-          lastTemp = 0,
+        { lastTemp = 0,
           code = [],
           locs = M.empty,
           blockLabel = BlockLabel 0,

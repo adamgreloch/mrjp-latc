@@ -91,7 +91,7 @@ locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 debugPrint :: String -> SSAM ()
 debugPrint s = do
   currLab <- asks currLabel
-  when False $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(L" ++ show currLab ++ ") " ++ s
+  when True $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
 
 getLastNum :: VarID -> SSAM (Maybe Int)
 getLastNum vu = gets (M.lookup vu . lastDefNum)
@@ -278,10 +278,11 @@ ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
         _ephi -> ssaCode t
 ssaCode (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "ssaInstr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
+  loc1' <- maybeGenPhi loc1
   loc2' <- maybeGenPhi loc2
   loc3' <- maybeGenPhi loc3
   t' <- ssaCode t
-  return $ Bin op loc1 loc2' loc3' : t'
+  return $ Bin op loc1' loc2' loc3' : t'
 ssaCode (Call loc1 idt locs : t) = do
   locs' <- mapM maybeGenPhi locs
   t' <- ssaCode t

@@ -51,7 +51,8 @@ data Store = Store
   { cfgs :: CFGsNoDefs,
     currStmts :: [Stmt],
     lastLabel :: Label,
-    cfgDefs :: Defs
+    cfgDefs :: Defs,
+    counter :: Int
   }
   deriving (Show)
 
@@ -64,7 +65,7 @@ data Env = Env
 type CFGM a = StateT Store (ReaderT Env IO) a
 
 debugPrint :: String -> CFGM ()
-debugPrint s = when False $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
+debugPrint s = when True $ liftIO $ hPutStrLn stderr $ "CFG: " ++ s
 
 freshLabel :: CFGM Label
 freshLabel = do
@@ -75,6 +76,15 @@ freshLabel = do
       put (st {lastLabel = fresh})
       return fresh
     _else -> error "why"
+
+freshIdent :: CFGM Ident
+freshIdent = do
+  st <- get
+  let fresh = counter st + 1
+  put (st {counter = fresh})
+  -- this ident must be illegal in the language
+  -- to guarantee it is not used in the source code
+  return (Ident ("@" ++ show fresh))
 
 addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
@@ -213,6 +223,59 @@ endCurrBlock = do
 
   return currLab
 
+procExpr :: Expr -> CFGM ((When, Label), Env, Expr)
+procExpr (EAnd p e1 e2) = do
+  idt <- freshIdent
+  env <- bindVar idt (Bool p)
+  addStmtToCurrBlock (Decl p (Bool p) [Init p idt (ELitFalse p)])
+  local
+    (const env)
+    ( do
+        (_, env', e1') <- procExpr e1
+        (_, env'', e2') <- local (const env') $ procExpr e2
+        local
+          (const env'')
+          ( do
+              let inner = Ass p idt e2'
+              addStmtToCurrBlock (Cond p e1' inner)
+              currLab <- endCurrBlock
+
+              lab1 <- freshLabel
+              addEdgeFromTo currLab lab1 WhenTrue
+              local (withLabel lab1) $ addStmtToCurrBlock inner
+
+              env''' <- asks (withLabel lab1)
+              return ((WhenFalse, currLab), env''', EVar p idt)
+          )
+    )
+procExpr (EOr p e1 e2) = do
+  idt <- freshIdent
+  env <- bindVar idt (Bool p)
+  addStmtToCurrBlock (Decl p (Bool p) [Init p idt (ELitTrue p)])
+  local
+    (const env)
+    ( do
+        (_, env', e1') <- procExpr e1
+        (_, env'', e2') <- local (const env') $ procExpr e2
+        local
+          (const env'')
+          ( do
+              let inner = Ass p idt e2'
+              addStmtToCurrBlock (Cond p e1' inner)
+              currLab <- endCurrBlock
+
+              lab1 <- freshLabel
+              addEdgeFromTo currLab lab1 WhenFalse
+              local (withLabel lab1) $ addStmtToCurrBlock inner
+
+              env''' <- asks (withLabel lab1)
+              return ((WhenTrue, currLab), env''', EVar p idt)
+          )
+    )
+procExpr e = do
+  env <- ask
+  return ((WhenDone, currLabel env), env, e)
+
 procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
   currLab <- endCurrBlock
@@ -247,18 +310,31 @@ procStmts (stmt : t) = do
           local (withLabel lab2) $ procStmts t
     (Ret _ _) -> handleRets stmt
     (VRet _) -> handleRets stmt
-    (Cond _ _ inner) -> do
-      addStmtToCurrBlock stmt
-      currLab <- endCurrBlock
+    (Cond p e inner) -> do
+      ((whenExpr, exprLab), env', e') <- procExpr e
+      local
+        (const env')
+        ( do
+            addStmtToCurrBlock (Cond p e' inner)
+            currLab <- endCurrBlock
 
-      lab1 <- freshLabel
-      addEdgeFromTo currLab lab1 WhenTrue
-      retLabs <- local (withLabel lab1) $ procStmts [inner]
+            lab1 <- freshLabel
+            lab2 <- freshLabel
+            addEdgeFromTo currLab lab1 WhenTrue
+            addEdgeFromTo
+              exprLab
+              ( case whenExpr of
+                  WhenTrue -> lab1
+                  WhenFalse -> lab2
+                  _else -> error "huh"
+              )
+              whenExpr
+            retLabs <- local (withLabel lab1) $ procStmts [inner]
 
-      lab2 <- freshLabel
-      addEdgeFromTo currLab lab2 WhenFalse
-      addEdgesFromTo retLabs lab2 WhenDone
-      local (withLabel lab2) $ procStmts t
+            addEdgeFromTo currLab lab2 WhenFalse
+            addEdgesFromTo retLabs lab2 WhenDone
+            local (withLabel lab2) $ procStmts t
+        )
     (CondElse _ _ innerTrue innerFalse) -> do
       addStmtToCurrBlock stmt
       currLab <- endCurrBlock
@@ -335,10 +411,10 @@ addBinding def idt tp = do
   debugPrint $ "addBinding " ++ show idt ++ "(sloc " ++ show sloc ++ ") " ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")\n" ++ show (cfgDefs st)
   env <- ask
   return env {currBindings = M.alter (f sloc) idt (currBindings env)}
-    where
-      -- TODO could be done better
-      f sloc Nothing = Just [sloc]
-      f sloc (Just l) = Just (sloc : l)
+  where
+    -- TODO could be done better
+    f sloc Nothing = Just [sloc]
+    f sloc (Just l) = Just (sloc : l)
 
 bindVar :: Ident -> Type -> CFGM Env
 bindVar idt tp = do
@@ -407,6 +483,7 @@ runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
     initStore =
       Store
         { cfgs = M.empty,
+          counter = 0,
           currStmts = [],
           CFG.lastLabel = BlockLabel 0,
           cfgDefs = globalDefs tcinfo
