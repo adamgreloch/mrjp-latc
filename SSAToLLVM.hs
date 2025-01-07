@@ -301,6 +301,7 @@ toLLVM (SSA (cfgs, info)) = do
         [ "target triple = \"x86_64-pc-linux-gnu\"",
           "declare void @printInt(i32)",
           "declare void @printString(i8*)",
+          "declare i8* @readString()",
           "declare void @error()",
           "declare i32 @readInt()",
           "declare i32 @strcmp(i8*, i8*)",

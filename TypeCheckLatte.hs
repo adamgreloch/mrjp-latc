@@ -206,6 +206,7 @@ initTEnv =
           addPredefinedFun
           M.empty
           [ ("printString", Void nop, [Arg nop (Str nop) (Ident "v")]),
+            ("readString", Str nop, []),
             ("printInt", Void nop, [Arg nop (Int nop) (Ident "v")]),
             ("error", Void nop, []),
             ("readInt", Int nop, []),

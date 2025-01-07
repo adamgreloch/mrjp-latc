@@ -16,7 +16,7 @@ import AbsLatte
 import CFGDefs
 import Common
 import Control.Exception (assert)
-import Control.Monad (foldM, when)
+import Control.Monad (foldM, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
@@ -34,6 +34,7 @@ import Control.Monad.State
 import Data.Bifunctor qualified
 import Data.List (find)
 import Data.Map qualified as M
+import Data.Maybe (fromJust)
 import Data.Text (pack, replace, unpack)
 import GHC.IO.Handle.FD (stderr)
 import System.IO (hPutStrLn)
@@ -59,7 +60,8 @@ data Store = Store
 data Env = Env
   { currLabel :: Label,
     currFn :: Ident,
-    currBindings :: Bindings
+    currBindings :: Bindings,
+    currSCLabel :: Maybe (When, Label)
   }
 
 type CFGM a = StateT Store (ReaderT Env IO) a
@@ -82,9 +84,10 @@ freshIdent = do
   st <- get
   let fresh = counter st + 1
   put (st {counter = fresh})
-  -- this ident must be illegal in the language
-  -- to guarantee it is not used in the source code
-  return (Ident ("@" ++ show fresh))
+  -- this ident must be illegal in the language but
+  -- legal in LLVM to guarantee it is not used in the
+  -- source code (and that it will still compile :p)
+  return (Ident ("_" ++ show fresh))
 
 addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
@@ -94,6 +97,9 @@ emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.emp
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
+
+withSCLabel :: (When, Label) -> Env -> Env
+withSCLabel we env = env {currSCLabel = Just we}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -196,6 +202,7 @@ removeBBIfDead bb = do
 
 addEdgeFromTo :: Label -> Label -> When -> CFGM ()
 addEdgeFromTo lab0 lab1 w = do
+  debugPrint $ "add adge " ++ show lab0 ++ " -> " ++ show lab1 ++ " when " ++ show w
   bb0 <- getBB lab0
   bb1 <- getBB lab1
   if null (stmts bb0) && null (succs bb0)
@@ -243,23 +250,36 @@ endCurrBlock = do
     "endCurrBlock currLab="
       ++ show currLab
       ++ " currStmts:\n"
-      ++ printCode currStmts
+      ++ printCode (reverse currStmts)
 
   currBdgs <- asks currBindings
   putBindingsToBB currLab currBdgs
 
   return currLab
 
-procExpr :: Expr -> CFGM ((When, Label), Env, Expr)
-procExpr (EAnd p e1 e2) = do
+type CB = Expr -> CFGM (Label, Label, Env)
+
+type CS = Expr -> CFGM [Label]
+
+type CM = CFGM [Label]
+
+type CallBacks = (CB, CM, CS)
+
+justLabels :: Label -> Label -> Env -> CallBacks
+justLabels lab1 lab2 env = (\_ -> return (lab1, lab2, env), return [], \_ -> return [])
+
+shortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CallBacks -> CFGM (Env, Expr, Bool)
+shortCircuit shortOnTrue p e1 e2 cbs@(csc, cyes, cno) = do
   idt <- freshIdent
   env <- bindVar idt (Bool p)
-  addStmtToCurrBlock (Decl p (Bool p) [Init p idt (ELitFalse p)])
+  lab1 <- freshLabel
+  let lit = if shortOnTrue then ELitTrue p else ELitFalse p
+  addStmtToCurrBlock (Decl p (Bool p) [Init p idt lit])
   local
     (const env)
     ( do
-        (_, env', e1') <- procExpr e1
-        (_, env'', e2') <- local (const env') $ procExpr e2
+        (env', e1', _) <- shortcircuitIfBExpr e1 cbs
+        (env'', e2', _) <- local (const env') $ shortcircuitIfBExpr e2 cbs
         local
           (const env'')
           ( do
@@ -267,41 +287,112 @@ procExpr (EAnd p e1 e2) = do
               addStmtToCurrBlock (Cond p e1' inner)
               currLab <- endCurrBlock
 
-              lab1 <- freshLabel
-              addEdgeFromTo currLab lab1 WhenTrue
               local (withLabel lab1) $ addStmtToCurrBlock inner
 
-              env''' <- asks (withLabel lab1)
-              return ((WhenFalse, currLab), env''', EVar p idt)
+              let e = EVar p idt
+
+              (labOnTrue, labOnFalse, newEnv) <- local (withLabel lab1) $ csc e
+
+              let (innerTrue, innerFalse) = if shortOnTrue then (labOnTrue, lab1) else (lab1, labOnFalse)
+              addEdgeFromTo currLab innerTrue WhenTrue
+              addEdgeFromTo currLab innerFalse WhenFalse
+
+              return (withLabel lab1 env'', e, True)
           )
     )
-procExpr (EOr p e1 e2) = do
-  idt <- freshIdent
-  env <- bindVar idt (Bool p)
-  addStmtToCurrBlock (Decl p (Bool p) [Init p idt (ELitTrue p)])
-  local
-    (const env)
-    ( do
-        (_, env', e1') <- procExpr e1
-        (_, env'', e2') <- local (const env') $ procExpr e2
-        local
-          (const env'')
-          ( do
-              let inner = Ass p idt e2'
-              addStmtToCurrBlock (Cond p e1' inner)
-              currLab <- endCurrBlock
 
-              lab1 <- freshLabel
-              addEdgeFromTo currLab lab1 WhenFalse
-              local (withLabel lab1) $ addStmtToCurrBlock inner
+handleExpr :: Expr -> CallBacks -> CFGM [Label]
+handleExpr e cbs@(csc, cyes, cno) = do
+  (env', e1', b) <- shortcircuitIfBExpr e cbs
+  if b then local (const env') cyes else cno e
 
-              env''' <- asks (withLabel lab1)
-              return ((WhenTrue, currLab), env''', EVar p idt)
-          )
-    )
-procExpr e = do
+shortcircuitIfBExpr :: Expr -> CallBacks -> CFGM (Env, Expr, Bool)
+shortcircuitIfBExpr (EAnd p e1 e2) cbs = shortCircuit False p e1 e2 cbs
+shortcircuitIfBExpr (EOr p e1 e2) cbs = shortCircuit True p e1 e2 cbs
+shortcircuitIfBExpr (Not p e) cbs = do
+  (env, e', b) <- shortcircuitIfBExpr e cbs
+  return (env, Not p e', b)
+shortcircuitIfBExpr e cbs@(csc, cyes, cno) = do
   env <- ask
-  return ((WhenDone, currLabel env), env, e)
+  return (env, e, False)
+
+qshortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CFGM (Env, Expr, Bool)
+qshortCircuit shortOnTrue p e1 e2 = do
+  idt <- freshIdent
+  env <- bindVar idt (Bool p)
+  lab1 <- freshLabel
+  let lit = if shortOnTrue then ELitTrue p else ELitFalse p
+  addStmtToCurrBlock (Decl p (Bool p) [Init p idt lit])
+  local
+    (const env)
+    ( do
+        (env', e1', msc) <- qshortcircuitIfBExpr e1
+        (env'', e2', msc') <- local (const env') $ qshortcircuitIfBExpr e2
+        local
+          (const env'')
+          ( do
+              let inner = Ass p idt e2'
+              addStmtToCurrBlock (Cond p e1' inner)
+              currLab <- endCurrBlock
+
+              local (withLabel lab1) $ addStmtToCurrBlock inner
+
+              let e = EVar p idt
+
+              sc <- freshLabel
+
+              let whenSC = if shortOnTrue then WhenTrue else WhenFalse
+
+              if shortOnTrue
+                then do
+                  -- addEdgeFromTo currLab sc WhenTrue
+                  addEdgeFromTo currLab lab1 WhenFalse
+                else do
+                  addEdgeFromTo currLab lab1 WhenTrue
+              -- addEdgeFromTo currLab sc WhenFalse
+
+              debugPrint $ "can short-circuit from " ++ show currLab ++ " when " ++ show whenSC
+
+              resEnv <-
+                local
+                  (withLabel lab1 . withSCLabel (whenSC, currLab))
+                  ( do
+                      env <- ask
+                      nonSC <- endCurrBlock
+                      doneLab <- freshLabel
+                      addEdgeFromTo nonSC doneLab WhenDone
+                      mscLab <- asks currSCLabel
+                      case mscLab of
+                        Nothing -> error "no sc lab when expected"
+                        Just (whenSC, scLab) -> do
+                          addEdgeFromTo scLab doneLab whenSC
+                          return $ withLabel doneLab env
+                  )
+
+              return (resEnv, e, True)
+          )
+    )
+
+qshortcircuitIfBExpr :: Expr -> CFGM (Env, Expr, Bool)
+qshortcircuitIfBExpr (EApp p idt es) = do
+  (resEnv, es', b) <- f es
+  return (resEnv, EApp p idt es', b)
+  where
+    f (h : t) = do
+      (env', h', b1) <- qshortcircuitIfBExpr h
+      (env'', t', b2) <- local (const env') $ f t
+      return (env'', h' : t', b1 || b2)
+    f [] = do
+      env <- ask
+      return (env, [], False)
+qshortcircuitIfBExpr (EAnd p e1 e2) = qshortCircuit False p e1 e2
+qshortcircuitIfBExpr (EOr p e1 e2) = qshortCircuit True p e1 e2
+qshortcircuitIfBExpr (Not p e) = do
+  (env, e', b) <- qshortcircuitIfBExpr e
+  return (env, Not p e', b)
+qshortcircuitIfBExpr e = do
+  env <- ask
+  return (env, e, False)
 
 procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
@@ -310,6 +401,7 @@ procStmts [] = do
 procStmts (stmt : t) = do
   currLab_ <- asks currLabel
   debugPrint $ "procStmts currLab=" ++ show currLab_ ++ " stmts:\n" ++ printCode [stmt]
+  env <- ask
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
@@ -335,63 +427,84 @@ procStmts (stmt : t) = do
           -- mergeLabels currLab lab1
 
           local (withLabel lab2) $ procStmts t
-    (Ret _ _) -> handleRets stmt
+    (Ret p e) -> do
+      let cb e' =
+            ( do
+                let p = hasPosition e'
+                onTrueLab <- freshLabel
+                onFalseLab <- freshLabel
+
+                addStmtToCurrBlock (CondElse p e' (Empty p) (Empty p))
+                currLab <- endCurrBlock
+
+                addEdgeFromTo currLab onTrueLab WhenTrue
+                local
+                  (withLabel onTrueLab)
+                  ( do
+                      addStmtToCurrBlock (Ret p (ELitTrue p))
+                      endCurrBlock
+                  )
+                addRetEdgeFrom onTrueLab WhenDone
+
+                addEdgeFromTo currLab onFalseLab WhenFalse
+                local
+                  (withLabel onFalseLab)
+                  ( do
+                      addStmtToCurrBlock (Ret p (ELitFalse p))
+                      endCurrBlock
+                  )
+                addRetEdgeFrom onFalseLab WhenDone
+
+                env <- ask
+
+                return (onTrueLab, onFalseLab, env)
+            )
+      handleExpr e (cb, return [], \_ -> handleRets stmt)
     (VRet _) -> handleRets stmt
-    (Cond _ _ (Empty _)) -> procStmts t
+    -- (Cond _ _ (Empty _)) -> procStmts t
     (Cond _ (ELitFalse _) _) -> procStmts t
     (Cond _ (ELitTrue _) innerTrue) -> procStmts (innerTrue : t)
     (Cond p e inner) -> do
-      ((whenExpr, exprLab), env', e') <- procExpr e
+      onTrueLab <- freshLabel
+      onFalseLab <- freshLabel
+
+      (env', e', _) <- shortcircuitIfBExpr e (justLabels onTrueLab onFalseLab env)
+
       local
         (const env')
         ( do
             addStmtToCurrBlock (Cond p e' inner)
             currLab <- endCurrBlock
 
-            lab1 <- freshLabel
-            lab2 <- freshLabel
-            addEdgeFromTo currLab lab1 WhenTrue
-            _ <- case whenExpr of
-              WhenTrue -> addEdgeFromTo exprLab lab1 whenExpr
-              WhenFalse -> addEdgeFromTo exprLab lab2 whenExpr
-              _else -> return ()
+            addEdgeFromTo currLab onTrueLab WhenTrue
 
-            -- WARN: lab1, lab2 may become invalid after procStmts call
+            retLabs <- local (withLabel onTrueLab) $ procStmts [inner]
 
-            retLabs <- local (withLabel lab1) $ procStmts [inner]
-
-            addEdgeFromTo currLab lab2 WhenFalse
-            addEdgesFromTo retLabs lab2 WhenDone
-            local (withLabel lab2) $ procStmts t
+            addEdgeFromTo currLab onFalseLab WhenFalse
+            addEdgesFromTo retLabs onFalseLab WhenDone
+            local (withLabel onFalseLab) $ procStmts t
         )
     (CondElse _ (ELitTrue _) innerTrue _) -> procStmts (innerTrue : t)
     (CondElse _ (ELitFalse _) _ innerFalse) -> procStmts (innerFalse : t)
     (CondElse p e (Empty _) (Empty _)) -> procStmts t
-    (CondElse p e innerTrue (Empty _)) -> procStmts (Cond p e innerTrue :t)
-    (CondElse p e (Empty _) innerFalse) -> procStmts (Cond p (Neg p e) innerFalse :t)
+    (CondElse p e innerTrue (Empty _)) -> procStmts (Cond p e innerTrue : t)
+    (CondElse p e (Empty _) innerFalse) -> procStmts (Cond p (Neg p e) innerFalse : t)
     (CondElse p e innerTrue innerFalse) -> do
-      ((whenExpr, exprLab), env', e') <- procExpr e
+      onTrueLab <- freshLabel
+      onFalseLab <- freshLabel
+
+      (env', e', _) <- shortcircuitIfBExpr e (justLabels onTrueLab onFalseLab env)
       local
         (const env')
         ( do
             addStmtToCurrBlock (CondElse p e' innerTrue innerFalse)
             currLab <- endCurrBlock
 
-            lab1 <- freshLabel
-            lab2 <- freshLabel
+            addEdgeFromTo currLab onTrueLab WhenTrue
+            retLabsTrue <- local (withLabel onTrueLab) $ procStmts [innerTrue]
 
-            _ <- case whenExpr of
-              WhenTrue -> addEdgeFromTo exprLab lab1 whenExpr
-              WhenFalse -> addEdgeFromTo exprLab lab2 whenExpr
-              _else -> return ()
-
-            -- WARN: lab1, lab2 may become invalid after procStmts calls
-
-            addEdgeFromTo currLab lab1 WhenTrue
-            retLabsTrue <- local (withLabel lab1) $ procStmts [innerTrue]
-
-            addEdgeFromTo currLab lab2 WhenFalse
-            retLabsFalse <- local (withLabel lab2) $ procStmts [innerFalse]
+            addEdgeFromTo currLab onFalseLab WhenFalse
+            retLabsFalse <- local (withLabel onFalseLab) $ procStmts [innerFalse]
 
             let retLabs = retLabsTrue ++ retLabsFalse
             debugPrint $ "CondElse retLabs=" ++ show retLabs
@@ -404,32 +517,26 @@ procStmts (stmt : t) = do
         )
     (While p e loopBody) -> do
       currLab <- endCurrBlock
-      lab0 <- freshLabel
+      guardLab <- freshLabel
+      bodyLab <- freshLabel
+      endLab <- freshLabel
 
-      addEdgeFromTo currLab lab0 WhenDone
-      ((whenExpr, exprLab), env', e') <- local (withLabel lab0) $ procExpr e
+      addEdgeFromTo currLab guardLab WhenDone
+      (env', e', _) <- local (withLabel guardLab) $ shortcircuitIfBExpr e (justLabels bodyLab endLab env)
       local
         (const env')
         ( do
             addStmtToCurrBlock (While p e' loopBody)
             whileLab <- endCurrBlock
 
-            lab2 <- freshLabel
-            lab3 <- freshLabel
+            addEdgeFromTo whileLab bodyLab WhenTrue
 
-            _ <- case whenExpr of
-              WhenTrue -> addEdgeFromTo exprLab lab2 whenExpr
-              WhenFalse -> addEdgeFromTo exprLab lab3 whenExpr
-              _else -> return ()
+            retLabsDone <- local (withLabel bodyLab) $ procStmts [loopBody]
 
-            addEdgeFromTo whileLab lab2 WhenTrue
+            addEdgesFromTo retLabsDone guardLab WhenDone
+            addEdgeFromTo whileLab endLab WhenFalse
 
-            retLabsDone <- local (withLabel lab2) $ procStmts [loopBody]
-
-            addEdgesFromTo retLabsDone lab0 WhenDone
-
-            addEdgeFromTo whileLab lab3 WhenFalse
-            local (withLabel lab3) $ procStmts t
+            local (withLabel endLab) $ procStmts t
         )
     (Decl _ tp items) -> do
       env' <- readerSeq declareItem items
@@ -439,6 +546,20 @@ procStmts (stmt : t) = do
         declareItem :: Item -> CFGM Env
         declareItem (NoInit _ idt) = bindVar idt tp
         declareItem (Init _ idt _) = bindVar idt tp
+    (SExp p (ELitTrue _)) -> procStmts t
+    (SExp p (ELitFalse _)) -> procStmts t
+    (SExp p (EOr p1 (ELitFalse p2) e)) -> procStmts (SExp p e : t)
+    (SExp p (EAnd p1 (ELitTrue p2) e)) -> procStmts (SExp p e : t)
+    (SExp _ (EOr _ (ELitTrue _) _)) -> procStmts t
+    (SExp _ (EAnd _ (ELitFalse _) _)) -> procStmts t
+    (SExp p e) -> do
+      (env', e', b) <- qshortcircuitIfBExpr e
+      local
+        (const env')
+        ( do
+            addStmtToCurrBlock (SExp p e')
+            procStmts t
+        )
     _else -> do
       addStmtToCurrBlock stmt
       procStmts t
@@ -461,7 +582,7 @@ addBinding def idt tp = do
           }
     )
   st <- get
-  debugPrint $ "addBinding " ++ show idt ++ "(sloc " ++ show sloc ++ ") " ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")\n" ++ show (cfgDefs st)
+  -- debugPrint $ "addBinding " ++ show idt ++ "(sloc " ++ show sloc ++ ") " ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")\n" ++ show (cfgDefs st)
   env <- ask
   return env {currBindings = M.alter (f sloc) idt (currBindings env)}
   where
@@ -493,7 +614,8 @@ procTopDef (FnDef _ rettp fnname args block) = do
         Env
           { currLabel = lab,
             currFn = fnname,
-            currBindings = M.empty
+            currBindings = M.empty,
+            currSCLabel = Nothing
           }
   env' <- local (const env) $ readerSeq bindArgs args
   local
@@ -557,7 +679,8 @@ runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
       Env
         { currFn = Ident "??",
           currLabel = BlockLabel 0,
-          currBindings = globalBindings tcinfo
+          currBindings = globalBindings tcinfo,
+          currSCLabel = Nothing
         }
 
 genCFGs :: TypeCheckInfo -> Program -> IO CFGs

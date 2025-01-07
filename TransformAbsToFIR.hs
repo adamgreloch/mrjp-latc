@@ -169,7 +169,11 @@ getVarLocFromBinding idt = do
 
     defToLoc :: Def -> GenM Loc
     defToLoc def = case def of
-      (DVar tp (BlockLabel lab)) -> return (LAddr (toVType tp) (Var idt lab Nothing))
+      (DVar tp (BlockLabel lab)) -> do
+        -- case idt of
+        --   (Ident ('@' : _)) -> LAddr (toVType tp) <$> freshTemp
+          -- _else ->
+            return (LAddr (toVType tp) (Var idt lab Nothing))
       (DArg tp _) -> return (LAddr (toVType tp) (ArgVar idt))
       (DFun _ _) -> error "tried getting fun def"
       _else -> error "impossible"
