@@ -373,16 +373,16 @@ run v p o s =
       result <- getProcessStatus True False pid
       case result of
         Just (Exited ExitSuccess) ->
-          putStrLn "LLVM bitcode generated"
+          hPutStrLn stderr "LLVM bitcode generated"
         _otherwise -> do 
-          putStrLn "LLVM bitcode generation failed"
+          hPutStrLn stderr "LLVM bitcode generation failed"
           exitFailure
       pid <- forkProcess (executeFile "llvm-link" True ["-o", o -<.> "bc", o -<.> "bc_", "./lib/runtime.ll"] Nothing)
       result <- getProcessStatus True False pid
       case result of
         Just (Exited ExitSuccess) ->
-          putStrLn "LLVM linker succeeded"
-        _otherwise -> putStrLn "LLVM linking failed"
+          hPutStrLn stderr "LLVM linker succeeded"
+        _otherwise -> hPutStrLn stderr "LLVM linking failed"
       return ()
   where
     ts = myLexer s
