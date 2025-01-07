@@ -16,7 +16,7 @@ import AbsLatte
 import CFGDefs
 import Common
 import Control.Exception (assert)
-import Control.Monad (when)
+import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
@@ -139,6 +139,17 @@ replaceRefToLabel labFrom labTo (FnBlock lab) = do
     repl n = n
 replaceRefToLabel _ _ _ = return ()
 
+removeRefToLabel :: Label -> Node -> CFGM ()
+removeRefToLabel labToDelete (FnBlock lab) = do
+  bb <- getBB lab
+  let bb' = bb {preds = filter keep (preds bb), succs = filter (\(w, n) -> keep w) (succs bb)}
+  mapLabelToBB lab bb'
+  where
+    keep :: Node -> Bool
+    keep n@(FnBlock l) = l /= labToDelete
+    keep n = True
+removeRefToLabel _ _ = return ()
+
 mapLabelToBB :: Label -> BB -> CFGM ()
 mapLabelToBB lab bb = do
   idt <- asks currFn
@@ -156,6 +167,8 @@ mapLabelToBB lab bb = do
 removeLabel :: Label -> CFGM ()
 removeLabel lab = do
   idt <- asks currFn
+  st <- get
+  debugPrint $ show (cfgs st)
   modify
     ( \st ->
         st
@@ -165,6 +178,20 @@ removeLabel lab = do
                 idt
                 (cfgs st)
           }
+    )
+  st <- get
+  debugPrint $ show (cfgs st)
+
+removeBBIfDead :: BB -> CFGM ()
+removeBBIfDead bb = do
+  let lab = label bb
+  idt <- asks currFn
+  when
+    (null (succs bb))
+    ( do
+        debugPrint $ "removing " ++ show lab
+        mapM_ (removeRefToLabel lab) (preds bb)
+        removeLabel lab
     )
 
 addEdgeFromTo :: Label -> Label -> When -> CFGM ()
@@ -310,6 +337,9 @@ procStmts (stmt : t) = do
           local (withLabel lab2) $ procStmts t
     (Ret _ _) -> handleRets stmt
     (VRet _) -> handleRets stmt
+    (Cond _ _ (Empty _)) -> procStmts t
+    (Cond _ (ELitFalse _) _) -> procStmts t
+    (Cond _ (ELitTrue _) innerTrue) -> procStmts (innerTrue : t)
     (Cond p e inner) -> do
       ((whenExpr, exprLab), env', e') <- procExpr e
       local
@@ -334,6 +364,11 @@ procStmts (stmt : t) = do
             addEdgesFromTo retLabs lab2 WhenDone
             local (withLabel lab2) $ procStmts t
         )
+    (CondElse _ (ELitTrue _) innerTrue _) -> procStmts (innerTrue : t)
+    (CondElse _ (ELitFalse _) _ innerFalse) -> procStmts (innerFalse : t)
+    (CondElse p e (Empty _) (Empty _)) -> procStmts t
+    (CondElse p e innerTrue (Empty _)) -> procStmts (Cond p e innerTrue :t)
+    (CondElse p e (Empty _) innerFalse) -> procStmts (Cond p (Neg p e) innerFalse :t)
     (CondElse p e innerTrue innerFalse) -> do
       ((whenExpr, exprLab), env', e') <- procExpr e
       local
@@ -469,6 +504,7 @@ procTopDef (FnDef _ rettp fnname args block) = do
 
         -- void functions can lack return stmt, add it for them
         when (isVoid rettp) $ mapM_ addVRetIfImplicit retLabs
+        -- removeDeadNodes
     )
   where
     bindArgs :: Arg -> CFGM Env
@@ -491,9 +527,20 @@ procTopDef (FnDef _ rettp fnname args block) = do
           addRetEdgeFrom lab WhenDone
         _else -> return ()
 
+    removeDeadNodes :: CFGM ()
+    removeDeadNodes = do
+      st <- get
+      mapM_
+        ( mapM_
+            ( \bb -> do
+                debugPrint $ show bb
+                removeBBIfDead bb
+            )
+        )
+        (cfgs st)
+
 procProgram :: Program -> CFGM ()
-procProgram (Program _ topdefs) =
-  mapM_ procTopDef topdefs
+procProgram (Program _ topdefs) = mapM_ procTopDef topdefs
 
 runCFGM :: TypeCheckInfo -> CFGM a -> IO (a, Store)
 runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
