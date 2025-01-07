@@ -7,7 +7,7 @@ HAPPY      = happy
 HAPPY_OPTS = --array --info --ghc --coerce
 ALEX       = alex
 ALEX_OPTS  = --ghc
-GHC_OPTS 	 = -Wall
+GHC_OPTS 	 = -Wall $(OPTS)
 
 # List of goals not corresponding to file names.
 

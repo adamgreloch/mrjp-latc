@@ -20,7 +20,7 @@ check() {
   test_pack="$2"
   for test_prog in "${testdir}/${test_pack}"/*.lat;
   do
-    program_output=$(echo 42 | ./$binary -s $test_prog 2>&1)
+    program_output=$(echo 42 | ./$binary $test_prog 2>&1)
     ret_code=$?
     echo -ne "--- ${BOLD}$test_prog "
     if [ ${ret_code} -eq ${exp_code} ]

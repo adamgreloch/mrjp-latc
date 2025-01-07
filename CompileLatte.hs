@@ -373,7 +373,7 @@ run v p o s =
       result <- getProcessStatus True False pid
       case result of
         Just (Exited ExitSuccess) ->
-          putStrLn "LLVM bitcode generation successful"
+          putStrLn "LLVM bitcode generated"
         _otherwise -> do 
           putStrLn "LLVM bitcode generation failed"
           exitFailure
@@ -381,7 +381,7 @@ run v p o s =
       result <- getProcessStatus True False pid
       case result of
         Just (Exited ExitSuccess) ->
-          putStrLn "LLVM linking successful"
+          putStrLn "LLVM linker succeeded"
         _otherwise -> putStrLn "LLVM linking failed"
       return ()
   where
@@ -398,7 +398,6 @@ compileProgram v tree o = do
   tcinfo <- typeCheckProgram v tree
   -- putStrV v $ "[FIR]\n" ++ show (transformAbsToFIR tree)
   cfgs <- genCFGs tcinfo tree
-  putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = genFIR cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
   when (v == 1) $ putStrLn $ toDot cfgs
@@ -411,6 +410,8 @@ compileProgram v tree o = do
   when (v == 4) $ mapM_ putStrLn ir
   writeFile o ""
   mapM_ (\s -> appendFile o (s ++ "\n")) ir
+  when (v == 42) (do
+    putStrLn $ "[CFGs]\n" ++ show cfgs)
 
 usage :: IO ()
 usage = do
@@ -438,4 +439,4 @@ main = do
     "-f" : fs -> mapM_ (runFile 2 pProgram) fs
     "-S" : fs -> mapM_ (runFile 3 pProgram) fs
     "-l" : fs -> mapM_ (runFile 4 pProgram) fs
-    fs -> mapM_ (runFile 5 pProgram) fs
+    fs -> mapM_ (runFile 0 pProgram) fs

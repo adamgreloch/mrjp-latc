@@ -442,7 +442,7 @@ typeCheckProgram v (Program _ tds) = do
       hPutStrLn stderr ("ERROR\nType check error " ++ show te)
       exitFailure
     (Right tenv) -> do
-      when (v > 2) $ hPutStrLn stderr "OK\n"
+      when (v == 0) $ hPutStrLn stderr "OK"
       putStrV v (show tenv)
       return $ envToTypeCheckInfo tenv
 

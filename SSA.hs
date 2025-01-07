@@ -90,7 +90,7 @@ locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 debugPrint :: String -> SSAM ()
 debugPrint s = do
   currLab <- asks currLabel
-  when True $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
+  when False $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
 
 getLastNum :: VarID -> SSAM (Maybe Int)
 getLastNum vu = gets (M.lookup vu . lastDefNum)
