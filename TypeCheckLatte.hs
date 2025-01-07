@@ -210,7 +210,8 @@ initTEnv =
             ("error", Void nop, []),
             ("readInt", Int nop, []),
             ("readString", Str nop, []),
-            ("strcmp", Int nop, [s 1, s 2])
+            ("strcmp", Int nop, [s 1, s 2]),
+            ("concatStrings", Str nop, [s 1, s 2])
           ]
     }
   where

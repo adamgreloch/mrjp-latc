@@ -187,8 +187,8 @@ irInstr (Call retLoc fidt@(Ident fns) locs) = do
       ++ ")"
 irInstr (Bin CondBr loc1 loc2 loc3) =
   emit $ "br" % printLocWithType loc1 %> printLocWithType loc2 %> printLocWithType loc3
-irInstr (Bin op loc1 loc2@(LAddr VStr _) loc3) = compareStrings op loc1 loc2 loc3
-irInstr (Bin op loc1 loc2@(LString _) loc3) = compareStrings op loc1 loc2 loc3
+irInstr (Bin op loc1 loc2@(LAddr VStr _) loc3) = operateOnStrings op loc1 loc2 loc3
+irInstr (Bin op loc1 loc2@(LString _) loc3) = operateOnStrings op loc1 loc2 loc3
 irInstr (Bin op loc1 loc2 loc3) =
   emit $ show loc1 %= op2ToLLVM op % printLocWithType loc2 %> show loc3
 irInstr (Phi loc pops) = do
@@ -206,10 +206,12 @@ irInstr (Phi loc pops) = do
       % concat (commas locsStr)
 irInstr _ = return ()
 
-compareStrings op loc1 loc2 loc3 = do
+operateOnStrings op loc1 loc2 loc3 | isRel op = do
   cmpLoc <- freshCmpLoc
   irInstr (Call cmpLoc (Ident "strcmp") [loc2, loc3])
   irInstr (Bin op loc1 cmpLoc (LImmInt 0))
+operateOnStrings Add loc1 loc2 loc3 = irInstr (Call loc1 (Ident "concatStrings") [loc2, loc3])
+operateOnStrings _ _ _ _ = error "only rel and concat are allowed on strings"
 
 irBB :: BB' Code -> IRM ()
 irBB bb = do
@@ -301,7 +303,8 @@ toLLVM (SSA (cfgs, info)) = do
           "declare void @printString(i8*)",
           "declare void @error()",
           "declare i32 @readInt()",
-          "declare i32 @strcmp(i8*, i8*)"
+          "declare i32 @strcmp(i8*, i8*)",
+          "declare i8* @concatStrings(i8*, i8*)"
         ]
   return $ prolog ++ reverse (stringIR st) ++ reverse (ir st)
   where

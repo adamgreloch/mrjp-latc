@@ -136,3 +136,12 @@ data Instr
   | ILabel Label
   | Phi Loc [(Label, Loc)]
   deriving (Show)
+
+isRel :: Op2 -> Bool
+isRel LTh = True 
+isRel LEq = True
+isRel GTh = True
+isRel GEq = True
+isRel Eq = True
+isRel NEq = True
+isRel _ = False

@@ -7,6 +7,10 @@ declare i32 @scanf(i8*, ...)
 declare i32 @puts(i8*)
 declare void @exit(i32)
 declare i32 @strcmp(i8*, i8*)
+declare i8* @strncat(i8*, i8*, i32)
+declare i32 @strlen(i8*)
+declare i8* @malloc(i32)
+declare i8* @memcpy(i8*, i8*, i32)
 
 define void @printInt(i32 %x) {
   %t0 = getelementptr [4 x i8], [4 x i8]* @dnl, i32 0, i32 0
@@ -34,8 +38,16 @@ define i32 @readInt() {
 	ret i32 %t2
 }
 
-define i1 @strEq(i8* %s1, i8* %s2) {
-	%t1 = call i32 (i8*, i8*) @strcmp(i8* %s1, i8* %s2)
-  %t2 = icmp eq i32 %t1, 0
-	ret i1 %t2
+define i8* @concatStrings(i8* %s1, i8* %s2) {
+  %len1 = call i32 @strlen(i8* %s1)
+  %l1 = add i32 %len1, 1
+  %len2 = call i32 @strlen(i8* %s1)
+  %t0 = add i32 %len1, %len2
+  %t1 = add i32 %t0, 1
+
+  %buf = call i8* @malloc(i32 %t1)
+  call i8* @memcpy(i8* %buf, i8* %s1, i32 %l1)
+
+  %res = call i8* @strncat(i8* %buf, i8* %s2, i32 %t1)
+	ret i8* %res
 }
