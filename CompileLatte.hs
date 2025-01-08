@@ -85,27 +85,25 @@ compileProgram v tree o = do
 
 usage :: IO ()
 usage = do
-  putStrLn $
+  putStr $
     unlines
-      [ "usage: Call with one of the following argument combinations:",
-        "  --help          Display this help message.",
-        "  (no arguments)  Parse stdin verbosely.",
-        "  (files)         Parse content of files verbosely.",
-        "  -s (files)      Silent mode. Parse content of files silently.",
-        "  -g (files)      Print CFG in DOT format.",
-        "  -f (files)      Print FIRCFG in DOT format.",
-        "  -S (files)      Print SSACFG in DOT format.",
-        "  -l (files)      Emit LLVM IR."
+      [ "usage: ./latc_llvm [opts] [files]",
+        "where `opts`:",
+        "  --help      Display this help message.",
+        "  --cfg-ast   Print CFG in DOT format.",
+        "  --cfg-fir   Print FIRCFG in DOT format.",
+        "  --cfg-ssa   Print SSACFG in DOT format.",
+        "  --llvm-r    Print LLVM IR."
       ]
 
 main :: IO ()
 main = do
   args <- getArgs
   case args of
+    [] -> usage
     ["--help"] -> usage
-    "-s" : fs -> mapM_ (runFile 0 pProgram) fs
-    "-g" : fs -> mapM_ (runFile 1 pProgram) fs
-    "-f" : fs -> mapM_ (runFile 2 pProgram) fs
-    "-S" : fs -> mapM_ (runFile 3 pProgram) fs
-    "-l" : fs -> mapM_ (runFile 4 pProgram) fs
+    "--cfg-ast" : fs -> mapM_ (runFile 1 pProgram) fs
+    "--cfg-fir" : fs -> mapM_ (runFile 2 pProgram) fs
+    "--cfg-ssa" : fs -> mapM_ (runFile 3 pProgram) fs
+    "--llvm-ir" : fs -> mapM_ (runFile 4 pProgram) fs
     fs -> mapM_ (runFile 0 pProgram) fs

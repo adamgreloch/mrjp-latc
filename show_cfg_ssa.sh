@@ -1,3 +1,3 @@
 #!/bin/sh
 cat "$1"
-./CompileLatte -S "$1" | dot -Tsvg | feh -
+./CompileLatte --cfg-ssa "$1" | dot -Tsvg | feh -

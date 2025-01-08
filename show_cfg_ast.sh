@@ -1,2 +1,2 @@
 #!/bin/sh
-./CompileLatte -g "$1" | dot -Tsvg | feh - &
+./CompileLatte --cfg-ast "$1" | dot -Tsvg | feh - &
