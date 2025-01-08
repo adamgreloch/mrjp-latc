@@ -104,7 +104,7 @@ locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 debugPrint :: String -> SSAM ()
 debugPrint s = do
   currLab <- asks currLabel
-  when True $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
+  when False $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
 
 getLastNum :: VarID -> SSAM (Maybe Int)
 getLastNum vu = gets (M.lookup vu . lastDefNum)
@@ -305,8 +305,10 @@ ssaCode (Unar Asgn loc1@(LAddr _ _) loc2 : t) = do
       case e of
         (ELoc loc) -> do
           assign (locToVarID loc1') (ELoc loc)
-          ssaCode t
-        _ephi -> ssaCode t
+        (EPhi phiLoc _) -> do
+          debugPrint $ "ephi!: " ++ show loc1' ++ " <- " ++ show loc2
+          assign (locToVarID loc1') (ELoc phiLoc)
+      ssaCode t
 ssaCode (Bin op loc1 loc2 loc3 : t) = do
   debugPrint $ "SSA Instr: " ++ show loc1 ++ " <- " ++ show loc2 ++ " " ++ show op ++ " " ++ show loc3
   loc1' <- getUpdatedLoc loc1
@@ -354,6 +356,32 @@ updatePhisInSuccs = do
     )
     succs
 
+updatePhisFromPreds :: SSAM ()
+updatePhisFromPreds = do
+  currLab <- asks currLabel
+  preds <- getPreds currLab
+  phisMp <- gets phis
+
+  case M.lookup currLab phisMp of
+    Nothing -> return ()
+    Just mp -> do
+      mapM_
+        ( \predLab -> do
+            currDefMp <- gets currDef
+            debugPrint $ "update pred:" ++ show predLab ++ "\n\t" ++ show currDefMp
+
+            let updatePhi vi (loc, pops) =
+                  case M.lookup predLab $
+                    fromMaybe (error "no def of var in predecessor while we have it in phi") $
+                      M.lookup vi currDefMp of
+                    Just expr -> (loc, M.insert predLab expr pops)
+                    Nothing -> (loc, pops)
+
+            let mp' = M.mapWithKey updatePhi mp
+            modify (\st -> st {phis = M.insert currLab mp' phisMp})
+        )
+        preds
+
 wasVisited :: Label -> SSAM (Maybe Code)
 wasVisited lab = gets (M.lookup lab . visited)
 
@@ -371,9 +399,13 @@ ssaBB bb =
           Nothing -> do
             debugPrint "======== ssaBB : begin ========"
             stmts' <- ssaCode (reverse $ stmts bb)
+            debugPrint "======== ssaBB : updating phis ========"
             updatePhisInSuccs
+            -- TODO observe if needed
+            -- updatePhisFromPreds
             let res = reverse stmts'
             markVisited (label bb) res
+            debugPrint "======== ssaBB : done ========"
             return bb {stmts = res}
     )
 
