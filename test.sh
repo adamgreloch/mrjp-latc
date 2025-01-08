@@ -20,15 +20,39 @@ check() {
   test_pack="$2"
   for test_prog in "${testdir}/${test_pack}"/*.lat;
   do
+    INPUT="${test_prog%lat}input"
+    OUTPUT="${test_prog%lat}output"
+
     program_output=$(echo 42 | ./$binary $test_prog 2>&1)
     ret_code=$?
+
     echo -ne "--- ${BOLD}$test_prog "
     if [ ${ret_code} -eq ${exp_code} ]
     then
-      echo -e "${GREEN}OK${RESET} ---"
+      if [ -f ${OUTPUT} ]
+      then
+        if [ -f ${INPUT} ]
+        then
+          lli "${test_prog%lat}bc" < ${INPUT} | diff ${OUTPUT} -
+        else
+          lli "${test_prog%lat}bc" | diff ${OUTPUT} -
+        fi
+
+        diff_code=$?
+
+        if [ ${diff_code} -eq 0 ]
+        then
+          echo -e "${GREEN}EXEC OK${RESET} ---"
+          ((passed++))
+        else
+          echo -e "${RED}OUTPUT FAILED${RESET} ---"
+        fi
+      else
+        echo -e "${GREEN}TC OK${RESET} ---"
+        ((passed++))
+      fi
+
       echo -e "$program_output"
-      lli "${test_prog%lat}bc" | diff "${test_prog%lat}output" -
-      ((passed++))
     else
       echo -e "${RED}FAILED${RESET} ---"
       if [ ${exp_code} -eq 0 ]
@@ -36,6 +60,7 @@ check() {
         echo -e "$program_output"
       fi
     fi
+
     ((total++))
   done
 }
