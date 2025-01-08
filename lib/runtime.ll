@@ -7,7 +7,7 @@
 
 @snl = internal constant [4 x i8] c"%s\0A\00"
 @dnl = internal constant [4 x i8] c"%d\0A\00"
-@d   = internal constant [3 x i8] c"%d\00"	
+@d   = internal constant [4 x i8] c"%d \00"	
 @re   = internal constant [15 x i8] c"runtime error\0A\00"	
 
 declare i32 @printf(i8*, ...) 
@@ -41,7 +41,7 @@ define void @error() {
 
 define i32 @readInt() {
   %res = alloca i32
-  %t1 = getelementptr [3 x i8], [3 x i8]* @d, i32 0, i32 0
+  %t1 = getelementptr [4 x i8], [4 x i8]* @d, i32 0, i32 0
 	call i32 (i8*, ...) @scanf(i8* %t1, i32* %res)
 	%t2 = load i32, i32* %res
 	ret i32 %t2
@@ -50,17 +50,24 @@ define i32 @readInt() {
 define i8* @readString() {
   %t1 = alloca i8*, align 8
   %t2 = alloca i64, align 8
+  %t3 = alloca i64, align 8
   store i8* null, i8** %t1, align 8
-  %t3 = load %struct._IO_FILE*, %struct._IO_FILE** @stdin, align 8
-  %t4 = call i64 @getline(i8** %t1, i64* %t2, %struct._IO_FILE* %t3)
-  %t5 = icmp eq i64 %t4, -1
-  br i1 %t5, label %L0, label %L1
-L0:
-  call void @exit(i32 noundef 1) #4
-  unreachable
+  %t4 = load %struct._IO_FILE*, %struct._IO_FILE** @stdin, align 8
+  %t5 = call i64 @getline(i8** %t1, i64* %t2, %struct._IO_FILE* %t4)
+  store i64 %t5, i64* %t3, align 8
+  %t6 = icmp eq i64 %t5, -1
+  br i1 %t6, label %L1, label %L2
 L1:
-  %t8 = load i8*, i8** %t1, align 8
-  ret i8* %t8
+  call void @exit(i32 noundef 1)
+  unreachable
+L2:
+  %t9 = load i8*, i8** %t1, align 8
+  %t10 = load i64, i64* %t3, align 8
+  %t11 = sub i64 %t10, 1
+  %t12 = getelementptr inbounds i8, i8* %t9, i64 %t11
+  store i8 0, i8* %t12, align 1
+  %t13 = load i8*, i8** %t1, align 8
+  ret i8* %t13
 }
 
 define i8* @concatStrings(i8* %s1, i8* %s2) {
