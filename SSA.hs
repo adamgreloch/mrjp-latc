@@ -87,14 +87,14 @@ tryGetFromPhi vi = do
     Nothing -> return Nothing
     Just mp -> case M.lookup vi mp of
       Nothing -> return Nothing
-      Just (loc, mp') -> do
+      Just (loc, _) -> do
         debugPrint $ "tryGetFromPhi got " ++ printVi vi ++ " -> " ++ show loc
         return $ Just loc
 
+-- TODO make addr a different type than temp?
 addrToVarID :: Addr -> VarID
 addrToVarID (Var idt src _) = (idt, src)
 addrToVarID (ArgVar idt) = (idt, 0)
--- TODO make addr a different type than temp?
 addrToVarID _ = error "expected var or argvar"
 
 locToVarID :: Loc -> VarID
@@ -222,14 +222,7 @@ addPhiOperands tp vi preds (EPhi num _) = do
   where
     addPhiOperand :: Label -> SSAM PhiOperand
     addPhiOperand predLab = do
-      expr <-
-        local
-          (withLabel predLab)
-          ( do
-              cfg <- asks currCfg
-              let bb = fromMaybe (error "aa") $ M.lookup predLab cfg
-              readVariable tp vi
-          )
+      expr <- local (withLabel predLab) $ readVariable tp vi
       writeToPhis vi predLab expr
       debugPrint $ "addPhiOperand: " ++ printVi vi ++ " <- (L" ++ show predLab ++ ", " ++ show expr ++ ")"
       return (predLab, expr)
@@ -270,13 +263,8 @@ getUpdatedLoc loc@(LAddr tp addr) =
       currLab <- asks currLabel
       cd <- lookupCurrDef (addrToVarID addr) currLab
       case cd of
-        Nothing -> do
-          -- loc' <- freshNum loc
-          -- assign (locToVarID loc') (ELoc loc')
-          -- TODO args may never get generated to be on lhs
-          -- which simplifies things
-          return (LAddr tp (Var idt 0 (Just 0)))
-        Just e -> readVariable tp (locToVarID loc) >>= exprToRet
+        Nothing -> return (LAddr tp (Var idt 0 (Just 0)))
+        Just _ -> readVariable tp (locToVarID loc) >>= exprToRet
     (Var {}) -> do
       do
         e <- readVariable tp (locToVarID loc)
@@ -356,31 +344,33 @@ updatePhisInSuccs = do
     )
     succs
 
-updatePhisFromPreds :: SSAM ()
-updatePhisFromPreds = do
-  currLab <- asks currLabel
-  preds <- getPreds currLab
-  phisMp <- gets phis
-
-  case M.lookup currLab phisMp of
-    Nothing -> return ()
-    Just mp -> do
-      mapM_
-        ( \predLab -> do
-            currDefMp <- gets currDef
-            debugPrint $ "update pred:" ++ show predLab ++ "\n\t" ++ show currDefMp
-
-            let updatePhi vi (loc, pops) =
-                  case M.lookup predLab $
-                    fromMaybe (error "no def of var in predecessor while we have it in phi") $
-                      M.lookup vi currDefMp of
-                    Just expr -> (loc, M.insert predLab expr pops)
-                    Nothing -> (loc, pops)
-
-            let mp' = M.mapWithKey updatePhi mp
-            modify (\st -> st {phis = M.insert currLab mp' phisMp})
-        )
-        preds
+-- Commented out but may be useful one day
+--
+-- updatePhisFromPreds :: SSAM ()
+-- updatePhisFromPreds = do
+--   currLab <- asks currLabel
+--   preds <- getPreds currLab
+--   phisMp <- gets phis
+--
+--   case M.lookup currLab phisMp of
+--     Nothing -> return ()
+--     Just mp -> do
+--       mapM_
+--         ( \predLab -> do
+--             currDefMp <- gets currDef
+--             debugPrint $ "update pred:" ++ show predLab ++ "\n\t" ++ show currDefMp
+--
+--             let updatePhi vi (loc, pops) =
+--                   case M.lookup predLab $
+--                     fromMaybe (error "no def of var in predecessor while we have it in phi") $
+--                       M.lookup vi currDefMp of
+--                     Just expr -> (loc, M.insert predLab expr pops)
+--                     Nothing -> (loc, pops)
+--
+--             let mp' = M.mapWithKey updatePhi mp
+--             modify (\st -> st {phis = M.insert currLab mp' phisMp})
+--         )
+--         preds
 
 wasVisited :: Label -> SSAM (Maybe Code)
 wasVisited lab = gets (M.lookup lab . visited)
