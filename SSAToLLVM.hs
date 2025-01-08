@@ -1,10 +1,10 @@
 module SSAToLLVM (toLLVM) where
 
-import AbsLatte (Ident (..), Type, Type' (..))
+import AbsLatte (Ident (..), Type)
 import CFG
 import CFGDefs
 import Control.Monad.State
-  ( MonadState (get, put),
+  ( MonadState (get),
     StateT,
     gets,
     modify,
@@ -64,8 +64,8 @@ takeUsed = do
 
 addStrConstant :: String -> IRM Int
 addStrConstant str = do
-  st <- get
-  case M.lookup str (stringConstants st) of
+  sc <- gets stringConstants
+  case M.lookup str sc of
     Nothing -> do
       n <- freshStringNum
       emitString $ printStrConst n %= "internal constant" % "[" ++ show l ++ " x i8] c\"" ++ str ++ "\\00\""
@@ -98,9 +98,6 @@ emitGlobally s = modify (\st -> st {ir = (indent (2 * depth st) ++ s) : ir st})
 
 emit :: String -> IRM ()
 emit s = modify (\st -> st {currIR = (indent (2 * depth st) ++ s) : currIR st})
-  where
-    indent :: Int -> String
-    indent n = concat $ replicate n " "
 
 emitLabel :: Label -> IRM ()
 emitLabel l = modify (\st -> st {currIR = (show l ++ ":") : currIR st})
@@ -131,6 +128,7 @@ commas [] = []
 commas [h] = [h]
 commas (h : t) = (h ++ ", ") : commas t
 
+printLocWithType :: Loc -> String
 printLocWithType loc = printLocType loc % show loc
 
 op2ToLLVM :: Op2 -> String
@@ -166,7 +164,7 @@ irInstr (Br loc) = do
   ls <- printLoc loc
   emit $ "br" % printLocType loc % ls
 irInstr (Call retLoc fidt@(Ident fns) locs) = do
-  (rettp, args) <- lookupFn fidt
+  (_, args) <- lookupFn fidt
   locsStr <-
     mapM
       ( \loc -> do
@@ -191,7 +189,7 @@ irInstr (Bin op loc1 loc2@(LAddr VStr _) loc3) = operateOnStrings op loc1 loc2 l
 irInstr (Bin op loc1 loc2@(LString _) loc3) = operateOnStrings op loc1 loc2 loc3
 irInstr (Bin op loc1 loc2 loc3) =
   emit $ show loc1 %= op2ToLLVM op % printLocWithType loc2 %> show loc3
-irInstr (Phi loc pops) = do
+irInstr (Phi ploc pops) = do
   locsStr <-
     mapM
       ( \(lab, loc) -> do
@@ -200,12 +198,13 @@ irInstr (Phi loc pops) = do
       )
       pops
   emit $
-    show loc
+    show ploc
       %= "phi"
-      % printLocType loc
+      % printLocType ploc
       % concat (commas locsStr)
 irInstr _ = return ()
 
+operateOnStrings :: Op2 -> Loc -> Loc -> Loc -> IRM ()
 operateOnStrings op loc1 loc2 loc3 | isRel op = do
   cmpLoc <- freshCmpLoc
   irInstr (Call cmpLoc (Ident "strcmp") [loc2, loc3])
@@ -256,16 +255,13 @@ printArgs :: [(Type, Ident)] -> String
 printArgs l = concat (commas $ map (\(tp, Ident s) -> printType tp % "%" ++ s ++ "_0_0") l)
 
 printArgTypes :: [(Type, Ident)] -> String
-printArgTypes l = concat (commas $ map (\(tp, Ident s) -> printType tp) l)
-
--- TODO readString and error
+printArgTypes l = concat (commas $ map (\(tp, Ident _) -> printType tp) l)
 
 irCFGs :: CFGsNoDefs' Code -> IRM ()
 irCFGs cfgs = do
   let kv = M.toList cfgs
   mapM_
     ( \(fidt@(Ident fns), bb) -> do
-        st <- get
         (rettp, args) <- lookupFn fidt
         emitGlobally $
           "define"
@@ -275,7 +271,6 @@ irCFGs cfgs = do
             ++ "("
             ++ printArgs args
             ++ ") {"
-        -- emitLabel Entry
         depthIn
         irCFG bb
         depthOut
@@ -287,13 +282,12 @@ lookupFn :: Ident -> IRM (Type, [(Type, Ident)])
 lookupFn idt = do
   st <- get
   case M.lookup idt (globalBindings st) of
-    Just (sloc : t) -> case M.lookup sloc (globalDefs st) of
-      Just df@(DFun tp args) -> return (tp, args)
+    Just (sloc : _) -> case M.lookup sloc (globalDefs st) of
+      Just (DFun tp args) -> return (tp, args)
       _else -> error $ "no such def" % show idt
     Just _ -> error "impossible"
     Nothing -> error $ "no such bind" % show idt
 
--- TODO add printInt, printString, target triple, etc
 toLLVM :: SSA -> IO IR
 toLLVM (SSA (cfgs, info)) = do
   (_, st) <- runStateT m initStore
