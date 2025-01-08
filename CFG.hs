@@ -268,8 +268,8 @@ type CallBacks = (CB, CM, CS)
 justLabels :: Label -> Label -> Env -> CallBacks
 justLabels lab1 lab2 env = (\_ -> return (lab1, lab2, env), return [], \_ -> return [])
 
-shortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CallBacks -> CFGM (Env, Expr, Bool)
-shortCircuit shortOnTrue p e1 e2 cbs@(csc, cyes, cno) = do
+shortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> Label -> Label -> CFGM (Env, Expr)
+shortCircuit shortOnTrue p e1 e2 labOnTrue labOnFalse = do
   idt <- freshIdent
   env <- bindVar idt (Bool p)
   lab1 <- freshLabel
@@ -278,8 +278,8 @@ shortCircuit shortOnTrue p e1 e2 cbs@(csc, cyes, cno) = do
   local
     (const env)
     ( do
-        (env', e1', _) <- shortcircuitIfBExpr e1 cbs
-        (env'', e2', _) <- local (const env') $ shortcircuitIfBExpr e2 cbs
+        (env', e1') <- tryShortCircuitCondExpr e1 labOnTrue labOnFalse
+        (env'', e2') <- local (const env') $ tryShortCircuitCondExpr e2 labOnTrue labOnFalse
         local
           (const env'')
           ( do
@@ -291,32 +291,25 @@ shortCircuit shortOnTrue p e1 e2 cbs@(csc, cyes, cno) = do
 
               let e = EVar p idt
 
-              (labOnTrue, labOnFalse, newEnv) <- local (withLabel lab1) $ csc e
-
               let (innerTrue, innerFalse) = if shortOnTrue then (labOnTrue, lab1) else (lab1, labOnFalse)
               addEdgeFromTo currLab innerTrue WhenTrue
               addEdgeFromTo currLab innerFalse WhenFalse
 
-              return (withLabel lab1 env'', e, True)
+              return (withLabel lab1 env'', e)
           )
     )
 
-handleExpr :: Expr -> CallBacks -> CFGM [Label]
-handleExpr e cbs@(csc, cyes, cno) = do
-  (env', e1', b) <- shortcircuitIfBExpr e cbs
-  if b then local (const env') cyes else cno e
-
-shortcircuitIfBExpr :: Expr -> CallBacks -> CFGM (Env, Expr, Bool)
-shortcircuitIfBExpr (EAnd p e1 e2) cbs = shortCircuit False p e1 e2 cbs
-shortcircuitIfBExpr (EOr p e1 e2) cbs = shortCircuit True p e1 e2 cbs
-shortcircuitIfBExpr (Not p e) cbs = do
-  (env, e', b) <- shortcircuitIfBExpr e cbs
-  return (env, Not p e', b)
-shortcircuitIfBExpr e cbs@(csc, cyes, cno) = do
+tryShortCircuitCondExpr :: Expr -> Label -> Label -> CFGM (Env, Expr)
+tryShortCircuitCondExpr (EAnd p e1 e2) labOnTrue labOnFalse = shortCircuit False p e1 e2 labOnTrue labOnFalse
+tryShortCircuitCondExpr (EOr p e1 e2) labOnTrue labOnFalse = shortCircuit True p e1 e2 labOnTrue labOnFalse
+tryShortCircuitCondExpr (Not p e) labOnTrue labOnFalse = do
+  (env, e') <- tryShortCircuitCondExpr e labOnTrue labOnFalse
+  return (env, Not p e')
+tryShortCircuitCondExpr e _ _ = do
   env <- ask
-  return (env, e, False)
+  return (env, e)
 
-qshortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CFGM (Env, Expr, Bool)
+qshortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CFGM (Env, Expr)
 qshortCircuit shortOnTrue p e1 e2 = do
   idt <- freshIdent
   env <- bindVar idt (Bool p)
@@ -326,8 +319,8 @@ qshortCircuit shortOnTrue p e1 e2 = do
   local
     (const env)
     ( do
-        (env', e1', msc) <- qshortcircuitIfBExpr e1
-        (env'', e2', msc') <- local (const env') $ qshortcircuitIfBExpr e2
+        (env', e1') <- tryShortCircuitExpr e1
+        (env'', e2') <- local (const env') $ tryShortCircuitExpr e2
         local
           (const env'')
           ( do
@@ -344,12 +337,10 @@ qshortCircuit shortOnTrue p e1 e2 = do
               let whenSC = if shortOnTrue then WhenTrue else WhenFalse
 
               if shortOnTrue
-                then do
-                  -- addEdgeFromTo currLab sc WhenTrue
+                then
                   addEdgeFromTo currLab lab1 WhenFalse
-                else do
+                else
                   addEdgeFromTo currLab lab1 WhenTrue
-              -- addEdgeFromTo currLab sc WhenFalse
 
               debugPrint $ "can short-circuit from " ++ show currLab ++ " when " ++ show whenSC
 
@@ -369,30 +360,30 @@ qshortCircuit shortOnTrue p e1 e2 = do
                           return $ withLabel doneLab env
                   )
 
-              return (resEnv, e, True)
+              return (resEnv, e)
           )
     )
 
-qshortcircuitIfBExpr :: Expr -> CFGM (Env, Expr, Bool)
-qshortcircuitIfBExpr (EApp p idt es) = do
-  (resEnv, es', b) <- f es
-  return (resEnv, EApp p idt es', b)
+tryShortCircuitExpr :: Expr -> CFGM (Env, Expr)
+tryShortCircuitExpr (EApp p idt es) = do
+  (resEnv, es') <- f es
+  return (resEnv, EApp p idt es')
   where
     f (h : t) = do
-      (env', h', b1) <- qshortcircuitIfBExpr h
-      (env'', t', b2) <- local (const env') $ f t
-      return (env'', h' : t', b1 || b2)
+      (env', h') <- tryShortCircuitExpr h
+      (env'', t') <- local (const env') $ f t
+      return (env'', h' : t')
     f [] = do
       env <- ask
-      return (env, [], False)
-qshortcircuitIfBExpr (EAnd p e1 e2) = qshortCircuit False p e1 e2
-qshortcircuitIfBExpr (EOr p e1 e2) = qshortCircuit True p e1 e2
-qshortcircuitIfBExpr (Not p e) = do
-  (env, e', b) <- qshortcircuitIfBExpr e
-  return (env, Not p e', b)
-qshortcircuitIfBExpr e = do
+      return (env, [])
+tryShortCircuitExpr (EAnd p e1 e2) = qshortCircuit False p e1 e2
+tryShortCircuitExpr (EOr p e1 e2) = qshortCircuit True p e1 e2
+tryShortCircuitExpr (Not p e) = do
+  (env, e') <- tryShortCircuitExpr e
+  return (env, Not p e')
+tryShortCircuitExpr e = do
   env <- ask
-  return (env, e, False)
+  return (env, e)
 
 procStmts :: [Stmt] -> CFGM [Label]
 procStmts [] = do
@@ -428,47 +419,21 @@ procStmts (stmt : t) = do
 
           local (withLabel lab2) $ procStmts t
     (Ret p e) -> do
-      let cb e' =
-            ( do
-                let p = hasPosition e'
-                onTrueLab <- freshLabel
-                onFalseLab <- freshLabel
-
-                addStmtToCurrBlock (CondElse p e' (Empty p) (Empty p))
-                currLab <- endCurrBlock
-
-                addEdgeFromTo currLab onTrueLab WhenTrue
-                local
-                  (withLabel onTrueLab)
-                  ( do
-                      addStmtToCurrBlock (Ret p (ELitTrue p))
-                      endCurrBlock
-                  )
-                addRetEdgeFrom onTrueLab WhenDone
-
-                addEdgeFromTo currLab onFalseLab WhenFalse
-                local
-                  (withLabel onFalseLab)
-                  ( do
-                      addStmtToCurrBlock (Ret p (ELitFalse p))
-                      endCurrBlock
-                  )
-                addRetEdgeFrom onFalseLab WhenDone
-
-                env <- ask
-
-                return (onTrueLab, onFalseLab, env)
-            )
-      handleExpr e (cb, return [], \_ -> handleRets stmt)
+      (env', e') <- tryShortCircuitExpr e
+      local
+        (const env')
+        ( do
+            handleRets (Ret p e')
+        )
     (VRet _) -> handleRets stmt
-    -- (Cond _ _ (Empty _)) -> procStmts t
+    (Cond _ _ (Empty _)) -> procStmts t
     (Cond _ (ELitFalse _) _) -> procStmts t
     (Cond _ (ELitTrue _) innerTrue) -> procStmts (innerTrue : t)
     (Cond p e inner) -> do
       onTrueLab <- freshLabel
       onFalseLab <- freshLabel
 
-      (env', e', _) <- shortcircuitIfBExpr e (justLabels onTrueLab onFalseLab env)
+      (env', e') <- tryShortCircuitCondExpr e onTrueLab onFalseLab
 
       local
         (const env')
@@ -493,7 +458,7 @@ procStmts (stmt : t) = do
       onTrueLab <- freshLabel
       onFalseLab <- freshLabel
 
-      (env', e', _) <- shortcircuitIfBExpr e (justLabels onTrueLab onFalseLab env)
+      (env', e') <- tryShortCircuitCondExpr e onTrueLab onFalseLab
       local
         (const env')
         ( do
@@ -522,7 +487,7 @@ procStmts (stmt : t) = do
       endLab <- freshLabel
 
       addEdgeFromTo currLab guardLab WhenDone
-      (env', e', _) <- local (withLabel guardLab) $ shortcircuitIfBExpr e (justLabels bodyLab endLab env)
+      (env', e') <- local (withLabel guardLab) $ tryShortCircuitCondExpr e bodyLab endLab
       local
         (const env')
         ( do
@@ -553,7 +518,7 @@ procStmts (stmt : t) = do
     (SExp _ (EOr _ (ELitTrue _) _)) -> procStmts t
     (SExp _ (EAnd _ (ELitFalse _) _)) -> procStmts t
     (SExp p e) -> do
-      (env', e', b) <- qshortcircuitIfBExpr e
+      (env', e') <- tryShortCircuitExpr e
       local
         (const env')
         ( do
