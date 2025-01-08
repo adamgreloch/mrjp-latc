@@ -27,6 +27,7 @@ check() {
     then
       echo -e "${GREEN}OK${RESET} ---"
       echo -e "$program_output"
+      lli "${test_prog%lat}bc" | diff "${test_prog%lat}output" -
       ((passed++))
     else
       echo -e "${RED}FAILED${RESET} ---"

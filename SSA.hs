@@ -49,7 +49,8 @@ data Store = Store
     lastDefNumInBlock :: Map VarID (Map Label Int),
     lastDefNum :: Map VarID Int,
     cfgs :: CFGsNoDefs' Code,
-    phis :: Map Label (Map VarID (Loc, Map Label Expr))
+    phis :: Map Label (Map VarID (Loc, Map Label Expr)),
+    visited :: Map Label Code
   }
   deriving (Show)
 
@@ -77,6 +78,19 @@ writeToPhis vi predLab e = do
       let phis' = M.insert currLab (M.insert vi (num, mp'') mp) (phis st)
       put (st {phis = phis'})
 
+tryGetFromPhi :: VarID -> SSAM (Maybe Loc)
+tryGetFromPhi vi = do
+  debugPrint $ "tryGetFromPhi " ++ printVi vi
+  st <- get
+  currLab <- asks currLabel
+  case M.lookup currLab (phis st) of
+    Nothing -> return Nothing
+    Just mp -> case M.lookup vi mp of
+      Nothing -> return Nothing
+      Just (loc, mp') -> do
+        debugPrint $ "tryGetFromPhi got " ++ printVi vi ++ " -> " ++ show loc
+        return $ Just loc
+
 addrToVarID :: Addr -> VarID
 addrToVarID (Var idt src _) = (idt, src)
 addrToVarID (ArgVar idt) = (idt, 0)
@@ -90,7 +104,7 @@ locToVarID loc = error $ "tried getting VarUId not from var: " ++ show loc
 debugPrint :: String -> SSAM ()
 debugPrint s = do
   currLab <- asks currLabel
-  when False $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
+  when True $ liftIO $ hPutStrLn stderr $ "SSA: " ++ "(" ++ show currLab ++ ") " ++ s
 
 getLastNum :: VarID -> SSAM (Maybe Int)
 getLastNum vu = gets (M.lookup vu . lastDefNum)
@@ -172,13 +186,17 @@ withLabel lab env = env {currLabel = lab}
 lookupCurrDef :: VarID -> Label -> SSAM (Maybe Expr)
 lookupCurrDef vi lab = do
   st <- get
-  case M.lookup vi (currDef st) of
-    Nothing -> do
-      debugPrint $ "looked for " ++ printVi vi ++ "got nothing"
-      return Nothing
-    Just mp -> do
-      debugPrint $ "looked for " ++ printVi vi ++ " got:\n\t" ++ show mp
-      return $ M.lookup lab mp
+  mloc <- tryGetFromPhi vi
+  case mloc of
+    Just loc -> return $ Just (ELoc loc)
+    Nothing ->
+      case M.lookup vi (currDef st) of
+        Nothing -> do
+          debugPrint $ "looked for " ++ printVi vi ++ "got nothing"
+          return Nothing
+        Just mp -> do
+          debugPrint $ "looked for " ++ printVi vi ++ " got:\n\t" ++ show mp
+          return $ M.lookup lab mp
 
 isVar :: Loc -> Bool
 isVar (LAddr _ (Var {})) = True
@@ -326,25 +344,37 @@ updatePhisInSuccs = do
 
             let updatePhi vi (loc, pops) =
                   case M.lookup currLab $
-                            fromMaybe (error "no def of var while successor has it in phi") $
-                              M.lookup vi currDefMp of
-                              Just expr -> (loc, M.insert currLab expr pops)
-                              Nothing -> (loc, pops)
+                    fromMaybe (error "no def of var while successor has it in phi") $
+                      M.lookup vi currDefMp of
+                    Just expr -> (loc, M.insert currLab expr pops)
+                    Nothing -> (loc, pops)
 
             let mp' = M.mapWithKey updatePhi mp
             modify (\st -> st {phis = M.insert succLab mp' phisMp})
     )
     succs
 
+wasVisited :: Label -> SSAM (Maybe Code)
+wasVisited lab = gets (M.lookup lab . visited)
+
+markVisited :: Label -> Code -> SSAM ()
+markVisited lab code = modify (\st -> st {visited = M.insert lab code (visited st)})
+
 ssaBB :: BB' Code -> SSAM (BB' Code)
 ssaBB bb =
   local
     (withLabel (label bb))
     ( do
-        debugPrint "======== ssaBB : begin ========"
-        stmts' <- ssaCode (reverse $ stmts bb)
-        updatePhisInSuccs
-        return bb {stmts = reverse stmts'}
+        wv <- wasVisited (label bb)
+        case wv of
+          Just res -> return bb {stmts = res}
+          Nothing -> do
+            debugPrint "======== ssaBB : begin ========"
+            stmts' <- ssaCode (reverse $ stmts bb)
+            updatePhisInSuccs
+            let res = reverse stmts'
+            markVisited (label bb) res
+            return bb {stmts = res}
     )
 
 -- TODO remove trivial phis like Phi %a_1_4 [(L8, %a_1_3), (L10, %a_1_3)]
@@ -420,6 +450,7 @@ toSSA (cfgs, info) = do
           lastDefNumInBlock = M.empty,
           lastDefNum = M.empty,
           phis = M.empty,
+          visited = M.empty,
           cfgs
         }
     initEnv =
