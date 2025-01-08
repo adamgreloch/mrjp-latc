@@ -257,29 +257,19 @@ endCurrBlock = do
 
   return currLab
 
-type CB = Expr -> CFGM (Label, Label, Env)
-
-type CS = Expr -> CFGM [Label]
-
-type CM = CFGM [Label]
-
-type CallBacks = (CB, CM, CS)
-
-justLabels :: Label -> Label -> Env -> CallBacks
-justLabels lab1 lab2 env = (\_ -> return (lab1, lab2, env), return [], \_ -> return [])
-
-shortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> Label -> Label -> CFGM (Env, Expr)
-shortCircuit shortOnTrue p e1 e2 labOnTrue labOnFalse = do
+scHelper :: Bool -> (BNFC'Position, Expr, Expr) -> (Label, Label) -> (Expr -> CFGM (Env, Expr)) -> CFGM (Env, Expr)
+scHelper shortOnTrue (p, e1, e2) (labOnTrue, labOnFalse) m = do
   idt <- freshIdent
   env <- bindVar idt (Bool p)
-  lab1 <- freshLabel
+  nonSCLab <- freshLabel
   let lit = if shortOnTrue then ELitTrue p else ELitFalse p
+  let (innerTrue, innerFalse) = if shortOnTrue then (labOnTrue, nonSCLab) else (nonSCLab, labOnFalse)
   addStmtToCurrBlock (Decl p (Bool p) [Init p idt lit])
   local
     (const env)
     ( do
-        (env', e1') <- tryShortCircuitCondExpr e1 labOnTrue labOnFalse
-        (env'', e2') <- local (const env') $ tryShortCircuitCondExpr e2 labOnTrue labOnFalse
+        (env', e1') <- m e1
+        (env'', e2') <- local (const env') $ m e2
         local
           (const env'')
           ( do
@@ -287,81 +277,41 @@ shortCircuit shortOnTrue p e1 e2 labOnTrue labOnFalse = do
               addStmtToCurrBlock (Cond p e1' inner)
               currLab <- endCurrBlock
 
-              local (withLabel lab1) $ addStmtToCurrBlock inner
+              local (withLabel nonSCLab) $ addStmtToCurrBlock inner
 
               let e = EVar p idt
 
-              let (innerTrue, innerFalse) = if shortOnTrue then (labOnTrue, lab1) else (lab1, labOnFalse)
               addEdgeFromTo currLab innerTrue WhenTrue
               addEdgeFromTo currLab innerFalse WhenFalse
 
-              return (withLabel lab1 env'', e)
+              return (withLabel nonSCLab env'', e)
           )
     )
 
-tryShortCircuitCondExpr :: Expr -> Label -> Label -> CFGM (Env, Expr)
-tryShortCircuitCondExpr (EAnd p e1 e2) labOnTrue labOnFalse = shortCircuit False p e1 e2 labOnTrue labOnFalse
-tryShortCircuitCondExpr (EOr p e1 e2) labOnTrue labOnFalse = shortCircuit True p e1 e2 labOnTrue labOnFalse
-tryShortCircuitCondExpr (Not p e) labOnTrue labOnFalse = do
-  (env, e') <- tryShortCircuitCondExpr e labOnTrue labOnFalse
+tryShortCircuitCondExpr :: (Label, Label) -> Expr -> CFGM (Env, Expr)
+tryShortCircuitCondExpr labs (EAnd p e1 e2) = scHelper False (p, e1, e2) labs (tryShortCircuitCondExpr labs)
+tryShortCircuitCondExpr labs (EOr p e1 e2) = scHelper True (p, e1, e2) labs (tryShortCircuitCondExpr labs)
+tryShortCircuitCondExpr labs (Not p e) = do
+  (env, e') <- tryShortCircuitCondExpr labs e
   return (env, Not p e')
-tryShortCircuitCondExpr e _ _ = do
+tryShortCircuitCondExpr _ e = do
   env <- ask
   return (env, e)
 
-qshortCircuit :: Bool -> BNFC'Position -> Expr -> Expr -> CFGM (Env, Expr)
-qshortCircuit shortOnTrue p e1 e2 = do
-  idt <- freshIdent
-  env <- bindVar idt (Bool p)
-  lab1 <- freshLabel
-  let lit = if shortOnTrue then ELitTrue p else ELitFalse p
-  addStmtToCurrBlock (Decl p (Bool p) [Init p idt lit])
+tryShortCircuitAndOr :: Bool -> (BNFC'Position, Expr, Expr) -> CFGM (Env, Expr)
+tryShortCircuitAndOr shortOnTrue andOr = do
+  scLab <- freshLabel
+  doneLab <- freshLabel
+
+  (env, e) <- scHelper shortOnTrue andOr (doneLab, doneLab) tryShortCircuitExpr
+
   local
     (const env)
     ( do
-        (env', e1') <- tryShortCircuitExpr e1
-        (env'', e2') <- local (const env') $ tryShortCircuitExpr e2
-        local
-          (const env'')
-          ( do
-              let inner = Ass p idt e2'
-              addStmtToCurrBlock (Cond p e1' inner)
-              currLab <- endCurrBlock
-
-              local (withLabel lab1) $ addStmtToCurrBlock inner
-
-              let e = EVar p idt
-
-              sc <- freshLabel
-
-              let whenSC = if shortOnTrue then WhenTrue else WhenFalse
-
-              if shortOnTrue
-                then
-                  addEdgeFromTo currLab lab1 WhenFalse
-                else
-                  addEdgeFromTo currLab lab1 WhenTrue
-
-              debugPrint $ "can short-circuit from " ++ show currLab ++ " when " ++ show whenSC
-
-              resEnv <-
-                local
-                  (withLabel lab1 . withSCLabel (whenSC, currLab))
-                  ( do
-                      env <- ask
-                      nonSC <- endCurrBlock
-                      doneLab <- freshLabel
-                      addEdgeFromTo nonSC doneLab WhenDone
-                      mscLab <- asks currSCLabel
-                      case mscLab of
-                        Nothing -> error "no sc lab when expected"
-                        Just (whenSC, scLab) -> do
-                          addEdgeFromTo scLab doneLab whenSC
-                          return $ withLabel doneLab env
-                  )
-
-              return (resEnv, e)
-          )
+        nonSCLab <- endCurrBlock
+        addEdgeFromTo nonSCLab doneLab WhenDone
+        resEnv <- ask
+        return (withLabel doneLab resEnv, e)
     )
 
 tryShortCircuitExpr :: Expr -> CFGM (Env, Expr)
@@ -376,8 +326,8 @@ tryShortCircuitExpr (EApp p idt es) = do
     f [] = do
       env <- ask
       return (env, [])
-tryShortCircuitExpr (EAnd p e1 e2) = qshortCircuit False p e1 e2
-tryShortCircuitExpr (EOr p e1 e2) = qshortCircuit True p e1 e2
+tryShortCircuitExpr (EAnd p e1 e2) = tryShortCircuitAndOr False (p, e1, e2)
+tryShortCircuitExpr (EOr p e1 e2) = tryShortCircuitAndOr True (p, e1, e2)
 tryShortCircuitExpr (Not p e) = do
   (env, e') <- tryShortCircuitExpr e
   return (env, Not p e')
@@ -414,7 +364,7 @@ procStmts (stmt : t) = do
 
           addEdgesFromTo (assert (length retLabs <= 1) retLabs) lab2 WhenDone
 
-          -- TODO defer this optimalization post FIR:
+          -- TODO defer this optimization post FIR:
           -- mergeLabels currLab lab1
 
           local (withLabel lab2) $ procStmts t
@@ -433,20 +383,21 @@ procStmts (stmt : t) = do
       onTrueLab <- freshLabel
       onFalseLab <- freshLabel
 
-      (env', e') <- tryShortCircuitCondExpr e onTrueLab onFalseLab
+      (env', e') <- tryShortCircuitCondExpr (onTrueLab, onFalseLab) e
 
       local
         (const env')
         ( do
             addStmtToCurrBlock (Cond p e' inner)
-            currLab <- endCurrBlock
+            nonSCLab <- endCurrBlock
 
-            addEdgeFromTo currLab onTrueLab WhenTrue
+            addEdgeFromTo nonSCLab onTrueLab WhenTrue
 
             retLabs <- local (withLabel onTrueLab) $ procStmts [inner]
 
-            addEdgeFromTo currLab onFalseLab WhenFalse
+            addEdgeFromTo nonSCLab onFalseLab WhenFalse
             addEdgesFromTo retLabs onFalseLab WhenDone
+
             local (withLabel onFalseLab) $ procStmts t
         )
     (CondElse _ (ELitTrue _) innerTrue _) -> procStmts (innerTrue : t)
@@ -458,17 +409,17 @@ procStmts (stmt : t) = do
       onTrueLab <- freshLabel
       onFalseLab <- freshLabel
 
-      (env', e') <- tryShortCircuitCondExpr e onTrueLab onFalseLab
+      (env', e') <- tryShortCircuitCondExpr (onTrueLab, onFalseLab) e
       local
         (const env')
         ( do
             addStmtToCurrBlock (CondElse p e' innerTrue innerFalse)
-            currLab <- endCurrBlock
+            nonSCLab <- endCurrBlock
 
-            addEdgeFromTo currLab onTrueLab WhenTrue
+            addEdgeFromTo nonSCLab onTrueLab WhenTrue
             retLabsTrue <- local (withLabel onTrueLab) $ procStmts [innerTrue]
 
-            addEdgeFromTo currLab onFalseLab WhenFalse
+            addEdgeFromTo nonSCLab onFalseLab WhenFalse
             retLabsFalse <- local (withLabel onFalseLab) $ procStmts [innerFalse]
 
             let retLabs = retLabsTrue ++ retLabsFalse
@@ -487,7 +438,7 @@ procStmts (stmt : t) = do
       endLab <- freshLabel
 
       addEdgeFromTo currLab guardLab WhenDone
-      (env', e') <- local (withLabel guardLab) $ tryShortCircuitCondExpr e bodyLab endLab
+      (env', e') <- local (withLabel guardLab) $ tryShortCircuitCondExpr (bodyLab, endLab) e
       local
         (const env')
         ( do
