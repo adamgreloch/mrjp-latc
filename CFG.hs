@@ -16,7 +16,7 @@ import AbsLatte
 import CFGDefs
 import Common
 import Control.Exception (assert)
-import Control.Monad (foldM, unless, when)
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask, local),
@@ -34,7 +34,6 @@ import Control.Monad.State
 import Data.Bifunctor qualified
 import Data.List (find)
 import Data.Map qualified as M
-import Data.Maybe (fromJust)
 import Data.Text (pack, replace, unpack)
 import GHC.IO.Handle.FD (stderr)
 import System.IO (hPutStrLn)
@@ -60,8 +59,7 @@ data Store = Store
 data Env = Env
   { currLabel :: Label,
     currFn :: Ident,
-    currBindings :: Bindings,
-    currSCLabel :: Maybe (When, Label)
+    currBindings :: Bindings
   }
 
 type CFGM a = StateT Store (ReaderT Env IO) a
@@ -97,9 +95,6 @@ emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.emp
 
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
-
-withSCLabel :: (When, Label) -> Env -> Env
-withSCLabel we env = env {currSCLabel = Just we}
 
 addEmptyBB :: Label -> CFGM BB
 addEmptyBB label = do
@@ -145,17 +140,6 @@ replaceRefToLabel labFrom labTo (FnBlock lab) = do
     repl n = n
 replaceRefToLabel _ _ _ = return ()
 
-removeRefToLabel :: Label -> Node -> CFGM ()
-removeRefToLabel labToDelete (FnBlock lab) = do
-  bb <- getBB lab
-  let bb' = bb {preds = filter keep (preds bb), succs = filter (\(w, n) -> keep w) (succs bb)}
-  mapLabelToBB lab bb'
-  where
-    keep :: Node -> Bool
-    keep n@(FnBlock l) = l /= labToDelete
-    keep n = True
-removeRefToLabel _ _ = return ()
-
 mapLabelToBB :: Label -> BB -> CFGM ()
 mapLabelToBB lab bb = do
   idt <- asks currFn
@@ -173,8 +157,6 @@ mapLabelToBB lab bb = do
 removeLabel :: Label -> CFGM ()
 removeLabel lab = do
   idt <- asks currFn
-  st <- get
-  debugPrint $ show (cfgs st)
   modify
     ( \st ->
         st
@@ -184,20 +166,6 @@ removeLabel lab = do
                 idt
                 (cfgs st)
           }
-    )
-  st <- get
-  debugPrint $ show (cfgs st)
-
-removeBBIfDead :: BB -> CFGM ()
-removeBBIfDead bb = do
-  let lab = label bb
-  idt <- asks currFn
-  when
-    (null (succs bb))
-    ( do
-        debugPrint $ "removing " ++ show lab
-        mapM_ (removeRefToLabel lab) (preds bb)
-        removeLabel lab
     )
 
 addEdgeFromTo :: Label -> Label -> When -> CFGM ()
@@ -300,7 +268,6 @@ tryShortCircuitCondExpr _ e = do
 
 tryShortCircuitAndOr :: Bool -> (BNFC'Position, Expr, Expr) -> CFGM (Env, Expr)
 tryShortCircuitAndOr shortOnTrue andOr = do
-  scLab <- freshLabel
   doneLab <- freshLabel
 
   (env, e) <- scHelper shortOnTrue andOr (doneLab, doneLab) tryShortCircuitExpr
@@ -342,7 +309,6 @@ procStmts [] = do
 procStmts (stmt : t) = do
   currLab_ <- asks currLabel
   debugPrint $ "procStmts currLab=" ++ show currLab_ ++ " stmts:\n" ++ printCode [stmt]
-  env <- ask
   case stmt of
     (BStmt _ (Block _ stmts)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
@@ -402,7 +368,7 @@ procStmts (stmt : t) = do
         )
     (CondElse _ (ELitTrue _) innerTrue _) -> procStmts (innerTrue : t)
     (CondElse _ (ELitFalse _) _ innerFalse) -> procStmts (innerFalse : t)
-    (CondElse p e (Empty _) (Empty _)) -> procStmts t
+    (CondElse _ _ (Empty _) (Empty _)) -> procStmts t
     (CondElse p e innerTrue (Empty _)) -> procStmts (Cond p e innerTrue : t)
     (CondElse p e (Empty _) innerFalse) -> procStmts (Cond p (Neg p e) innerFalse : t)
     (CondElse p e innerTrue innerFalse) -> do
@@ -462,10 +428,10 @@ procStmts (stmt : t) = do
         declareItem :: Item -> CFGM Env
         declareItem (NoInit _ idt) = bindVar idt tp
         declareItem (Init _ idt _) = bindVar idt tp
-    (SExp p (ELitTrue _)) -> procStmts t
-    (SExp p (ELitFalse _)) -> procStmts t
-    (SExp p (EOr p1 (ELitFalse p2) e)) -> procStmts (SExp p e : t)
-    (SExp p (EAnd p1 (ELitTrue p2) e)) -> procStmts (SExp p e : t)
+    (SExp _ (ELitTrue _)) -> procStmts t
+    (SExp _ (ELitFalse _)) -> procStmts t
+    (SExp p (EOr _ (ELitFalse _) e)) -> procStmts (SExp p e : t)
+    (SExp p (EAnd _ (ELitTrue _) e)) -> procStmts (SExp p e : t)
     (SExp _ (EOr _ (ELitTrue _) _)) -> procStmts t
     (SExp _ (EAnd _ (ELitFalse _) _)) -> procStmts t
     (SExp p e) -> do
@@ -487,34 +453,30 @@ procStmts (stmt : t) = do
       addRetEdgeFrom currLab WhenDone
       return []
 
-addBinding :: Def -> Ident -> Type -> CFGM Env
-addBinding def idt tp = do
+addBinding :: Def -> Ident -> CFGM Env
+addBinding def idt = do
   sloc <- newSLoc
-  currLab <- asks currLabel
   modify
     ( \st ->
         st
           { cfgDefs = M.insert sloc def (cfgDefs st)
           }
     )
-  st <- get
-  -- debugPrint $ "addBinding " ++ show idt ++ "(sloc " ++ show sloc ++ ") " ++ "(" ++ show tp ++ ", " ++ show currLab ++ ")\n" ++ show (cfgDefs st)
   env <- ask
   return env {currBindings = M.alter (f sloc) idt (currBindings env)}
   where
-    -- TODO could be done better
     f sloc Nothing = Just [sloc]
     f sloc (Just l) = Just (sloc : l)
 
 bindVar :: Ident -> Type -> CFGM Env
 bindVar idt tp = do
   currLab <- asks currLabel
-  addBinding (DVar tp currLab) idt tp
+  addBinding (DVar tp currLab) idt
 
 bindArg :: Ident -> Type -> CFGM Env
 bindArg idt tp = do
   currLab <- asks currLabel
-  addBinding (DArg tp currLab) idt tp
+  addBinding (DArg tp currLab) idt
 
 newSLoc :: CFGM SLoc
 newSLoc = gets (M.size . cfgDefs)
@@ -530,8 +492,7 @@ procTopDef (FnDef _ rettp fnname args block) = do
         Env
           { currLabel = lab,
             currFn = fnname,
-            currBindings = M.empty,
-            currSCLabel = Nothing
+            currBindings = M.empty
           }
   env' <- local (const env) $ readerSeq bindArgs args
   local
@@ -565,18 +526,6 @@ procTopDef (FnDef _ rettp fnname args block) = do
           addRetEdgeFrom lab WhenDone
         _else -> return ()
 
-    removeDeadNodes :: CFGM ()
-    removeDeadNodes = do
-      st <- get
-      mapM_
-        ( mapM_
-            ( \bb -> do
-                debugPrint $ show bb
-                removeBBIfDead bb
-            )
-        )
-        (cfgs st)
-
 procProgram :: Program -> CFGM ()
 procProgram (Program _ topdefs) = mapM_ procTopDef topdefs
 
@@ -595,8 +544,7 @@ runCFGM tcinfo m = runReaderT (runStateT m initStore) initEnv
       Env
         { currFn = Ident "??",
           currLabel = BlockLabel 0,
-          currBindings = globalBindings tcinfo,
-          currSCLabel = Nothing
+          currBindings = globalBindings tcinfo
         }
 
 genCFGs :: TypeCheckInfo -> Program -> IO CFGs
