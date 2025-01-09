@@ -16,7 +16,7 @@ import SSAToLLVM
 import SkelLatte ()
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitSuccess), exitFailure)
-import System.FilePath (replaceFileName, takeFileName, (-<.>))
+import System.FilePath (replaceFileName, takeFileName, dropFileName, (-<.>), (</>))
 import System.IO (hPutStrLn)
 import System.Posix
   ( ProcessStatus (Exited),
@@ -27,6 +27,8 @@ import System.Posix
 import TransformAbsToFIR (genFIR)
 import TypeCheckLatte
 import Prelude hiding (lookup)
+import System.Directory (removeFile)
+import System.Environment.Blank (getExecutablePath)
 
 type Err = Either String
 
@@ -48,10 +50,17 @@ run v p o s =
     Right tree -> do
       putStrV v "Parse Successful!"
       compileProgram v tree o
-      execCmd "llvm-as" ["-o", o -<.> "bc_", o]
-      execCmd "llvm-link" ["-o", o -<.> "bc", o -<.> "bc_", "./lib/runtime.ll"]
+      execCmd "llvm-as" ["-o", tempOutputPath, srcPath]
+      execDir <- dropFileName <$> getExecutablePath
+      execCmd "llvm-link" ["-o", linkedOutputPath, tempOutputPath, runtimeLibPath execDir]
+      removeFile tempOutputPath
       return ()
   where
+    srcPath = o
+    runtimeLibPath execPath = execPath </> "lib" </> "runtime.ll"
+    tempOutputPath = o -<.> "bc_"
+    linkedOutputPath = o -<.> "bc"
+
     ts = myLexer s
 
     showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
@@ -63,6 +72,7 @@ run v p o s =
           hPutStrLn stderr $ cmd ++ " succeeded"
         _otherwise -> do
           hPutStrLn stderr $ cmd ++ " failed"
+          removeFile tempOutputPath
           exitFailure
 
 compileProgram :: Int -> Program -> FilePath -> IO ()
