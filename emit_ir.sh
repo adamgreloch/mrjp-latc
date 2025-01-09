@@ -1,3 +1,3 @@
 #!/bin/sh
 cat "$1"
-./CompileLatte -l "$1"
+./CompileLatte --llvm-ir "$1"

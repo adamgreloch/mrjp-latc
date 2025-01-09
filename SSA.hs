@@ -399,19 +399,6 @@ ssaBB bb =
             return bb {stmts = res}
     )
 
--- TODO remove trivial phis like Phi %a_1_4 [(L8, %a_1_3), (L10, %a_1_3)]
--- propagate assignment in case of one pop? maybe leave it to copy propagation?
-nonTrivialPhiOrNop :: Loc -> [(Label, Loc)] -> [Instr]
-nonTrivialPhiOrNop phiLoc pops =
-  case filter isNotSame pops of
-    [] -> []
-    pops' -> [Phi phiLoc pops']
-  where
-    isNotSame (_, _) = True
-
--- isNotSame :: (Label, Loc) -> Bool
--- isNotSame (_, loc) = loc /= phiLoc
-
 emitPhi :: BB' Code -> SSAM (BB' Code)
 emitPhi bb = do
   debugPrint $ "emitPhi " ++ show bb
@@ -420,9 +407,9 @@ emitPhi bb = do
   foldM
     ( \acc vi -> do
         let (loc, popMap) = fromMaybe (error "impossible") $ M.lookup vi mp
-        let op = nonTrivialPhiOrNop loc $ map ephiToPhi (M.toList popMap)
+        let op = Phi loc $ map ephiToPhi (M.toList popMap)
         -- TODO awful, but optimal reversing is a todo
-        return $ acc {stmts = stmts acc ++ op}
+        return $ acc {stmts = stmts acc ++ [op]}
     )
     bb
     (M.keys mp)

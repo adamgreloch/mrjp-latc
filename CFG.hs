@@ -31,7 +31,6 @@ import Control.Monad.State
     modify,
     runStateT,
   )
-import Data.Bifunctor qualified
 import Data.List (find)
 import Data.Map qualified as M
 import Data.Text (pack, replace, unpack)
@@ -90,9 +89,6 @@ freshIdent = do
 addBBToCFG :: BB -> CFGM ()
 addBBToCFG bb = mapLabelToBB (label bb) bb
 
-emptyBB :: Label -> BB
-emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.empty}
-
 withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
 
@@ -129,44 +125,28 @@ putBindingsToBB lab bdg = do
 addEdgesFromTo :: [Label] -> Label -> When -> CFGM ()
 addEdgesFromTo labs bb w = mapM_ (\l -> addEdgeFromTo l bb w) labs
 
-replaceRefToLabel :: Label -> Label -> Node -> CFGM ()
-replaceRefToLabel labFrom labTo (FnBlock lab) = do
-  bb <- getBB lab
-  let bb' = bb {preds = map repl (preds bb), succs = map (Data.Bifunctor.first repl) (succs bb)}
-  mapLabelToBB lab bb'
-  where
-    repl :: Node -> Node
-    repl n@(FnBlock l) = if l == labFrom then FnBlock labTo else n
-    repl n = n
-replaceRefToLabel _ _ _ = return ()
+applyToCurrCFG :: (CFG -> CFG) -> CFGM ()
+applyToCurrCFG f = do
+  idt <- asks currFn
+  modify
+    ( \st ->
+        st
+          { cfgs =
+              M.update
+                (Just . f)
+                idt
+                (cfgs st)
+          }
+    )
+
+replaceCurrRefToLabel :: Label -> Label -> Node -> CFGM ()
+replaceCurrRefToLabel labFrom labTo node = applyToCurrCFG (replaceRefToLabel labFrom labTo node)
 
 mapLabelToBB :: Label -> BB -> CFGM ()
-mapLabelToBB lab bb = do
-  idt <- asks currFn
-  modify
-    ( \st ->
-        st
-          { cfgs =
-              M.update
-                (Just . M.insert lab bb)
-                idt
-                (cfgs st)
-          }
-    )
+mapLabelToBB lab bb = applyToCurrCFG (M.insert lab bb)
 
-removeLabel :: Label -> CFGM ()
-removeLabel lab = do
-  idt <- asks currFn
-  modify
-    ( \st ->
-        st
-          { cfgs =
-              M.update
-                (Just . M.delete lab)
-                idt
-                (cfgs st)
-          }
-    )
+deleteLabel :: Label -> CFGM ()
+deleteLabel lab = applyToCurrCFG (M.delete lab)
 
 addEdgeFromTo :: Label -> Label -> When -> CFGM ()
 addEdgeFromTo lab0 lab1 w = do
@@ -175,9 +155,9 @@ addEdgeFromTo lab0 lab1 w = do
   bb1 <- getBB lab1
   if null (stmts bb0) && null (succs bb0)
     then do
-      mapM_ (replaceRefToLabel lab0 lab1) (preds bb0)
+      mapM_ (replaceCurrRefToLabel lab0 lab1) (preds bb0)
       mapLabelToBB lab1 $ bb1 {preds = preds bb0 ++ preds bb1}
-      removeLabel lab0
+      deleteLabel lab0
     else do
       mapLabelToBB lab0 $ bb0 {succs = (FnBlock lab1, w) : succs bb0}
       mapLabelToBB lab1 $ bb1 {preds = FnBlock lab0 : preds bb1}
@@ -330,17 +310,10 @@ procStmts (stmt : t) = do
 
           addEdgesFromTo (assert (length retLabs <= 1) retLabs) lab2 WhenDone
 
-          -- TODO defer this optimization post FIR:
-          -- mergeLabels currLab lab1
-
           local (withLabel lab2) $ procStmts t
     (Ret p e) -> do
       (env', e') <- tryShortCircuitExpr e
-      local
-        (const env')
-        ( do
-            handleRets (Ret p e')
-        )
+      local (const env') $ handleRets (Ret p e')
     (VRet _) -> handleRets stmt
     (Cond _ _ (Empty _)) -> procStmts t
     (Cond _ (ELitFalse _) _) -> procStmts t

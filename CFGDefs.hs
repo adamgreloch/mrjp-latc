@@ -1,6 +1,7 @@
 module CFGDefs where
 
 import AbsLatte (Ident (..), Type)
+import Data.Bifunctor qualified
 import Data.List (find)
 import Data.Map qualified as M
 
@@ -74,3 +75,26 @@ succTrue = succWhen WhenTrue
 
 succFalse :: BB' a -> Maybe Label
 succFalse = succWhen WhenFalse
+
+emptyBB :: Label -> BB' [a]
+emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.empty}
+
+lookupBB :: Label -> CFG' [a] -> BB' [a]
+lookupBB label cfg = do
+  case M.lookup label cfg of
+    Just bb -> bb
+    Nothing -> emptyBB label
+
+replaceRefToLabel :: Label -> Label -> Node -> CFG' [a] -> CFG' [a]
+replaceRefToLabel labFrom labTo (FnBlock lab) cfg =
+  let bb = lookupBB lab cfg
+   in let bb' = bb {preds = map repl (preds bb), succs = map (Data.Bifunctor.first repl) (succs bb)}
+       in M.insert lab bb' cfg
+  where
+    repl :: Node -> Node
+    repl n@(FnBlock l) = if l == labFrom then FnBlock labTo else n
+    repl n = n
+replaceRefToLabel _ _ _ cfg = cfg
+
+deleteBB :: BB' a -> CFG' a -> CFG' a
+deleteBB bb = M.delete (label bb)

@@ -61,7 +61,9 @@ run v p o s =
       case result of
         Just (Exited ExitSuccess) ->
           hPutStrLn stderr $ cmd ++ " succeeded"
-        _otherwise -> hPutStrLn stderr $ cmd ++ " failed"
+        _otherwise -> do
+          hPutStrLn stderr $ cmd ++ " failed"
+          exitFailure
 
 compileProgram :: Int -> Program -> FilePath -> IO ()
 compileProgram v tree o = do
