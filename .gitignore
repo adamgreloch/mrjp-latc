@@ -18,6 +18,7 @@ CompileLatte
 small/
 *.dot
 *.svg
-tests/**/*.ll
-tests/**/*.bc
-/tests/**/*.bc_
+**/*.ll
+**/*.bc
+**/*.bc_
+latc_llvm

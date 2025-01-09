@@ -1,4 +1,4 @@
-# Latte interpreter
+# Latte compiler
 
 * Build
 ```
@@ -8,7 +8,7 @@ make
 ```
 make clean
 ```
-* Running tests
+* Running tests, e.g.
 ```
-./test.sh tests InterpretLatte
+./test.sh tests/core latc_llvm
 ```

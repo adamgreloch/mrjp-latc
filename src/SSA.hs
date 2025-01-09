@@ -430,6 +430,41 @@ emitPhis cfg = do
     cfg
     bbs
 
+-- renameLabelInPhis :: Label -> Label -> BB' Code -> BB' Code
+-- renameLabelInPhis labFrom labTo bb = bb {stmts = rewritePhi (stmts bb)}
+--   where
+--     rewritePop (lab, loc) = if lab == labFrom then (labTo, loc) else (lab, loc)
+--     rewritePhi (p@(Phi loc pops) : t) = Phi loc (map rewritePop pops) : rewritePhi t
+--     rewritePhi l = l
+--
+-- -- If a block is trivial (contains only Br) and has only
+-- -- one predecessor and successor, remove it.
+-- -- Since there is no phi, the variables in the successor
+-- -- are the same as in the predecessor.
+-- -- We only need to rewrite the labels in phis in the successor if it has some
+-- removeEmptyBlocks :: CFG' Code -> CFG' Code
+-- removeEmptyBlocks cfg = do
+--   foldr
+--     ( \bb acc ->
+--         if isTrivial bb
+--           then case (preds bb, succs bb) of
+--             ([predNode], [(FnBlock succLab, WhenDone)]) ->
+--               let succBB = lookupBB succLab acc in
+--               let succBB' = renameLabelInPhis (label bb) succLab succBB in
+--               let cfg' = replaceRefToLabel (label bb) succLab predNode acc
+--                in deleteBB bb $ M.insert succLab succBB' cfg'
+--             _else -> error "non-trivial bb detected like trivial"
+--           else acc
+--     )
+--     cfg
+--     (M.elems cfg)
+--   where
+--     isTrivial :: BB' Code -> Bool
+--     isTrivial bb = case stmts bb of
+--       [] -> error "empty bugged block"
+--       [Br _] -> True
+--       _else -> False
+--
 ssaCFG :: CFG' Code -> SSAM (CFG' Code)
 ssaCFG cfg = do
   local
