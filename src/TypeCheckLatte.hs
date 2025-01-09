@@ -134,6 +134,10 @@ data TypeError' a
       a
       -- | encountered type
       Type
+  | -- | When a loop is trivially infinite
+    InfiniteLoop
+      -- | error position
+      a
   | -- | Error type wrapper for statement pretty printing
     StmtError
       -- | statement in which type error error was thrown
@@ -248,6 +252,7 @@ instance Show TypeError where
   show (BadMainRetType p t) = at p ++ ": main has return type " ++ show t ++ " but should have int"
   show (SigTypeMismatch _ fn tp extp) = "signature type mismatch for function " ++ show fn ++ ". Got " ++ typeAt tp ++ ", but expected " ++ typeFrom extp
   show (SigArgCountMismatch p fn n p' exn) = "passed " ++ show n ++ " argument(s) to function " ++ show fn ++ " at " ++ at p ++ ", but expected " ++ show exn ++ " as declared at " ++ at p'
+  show (InfiniteLoop p) = "loop at " ++ at p ++ " never ends"
   show (StmtError stmt err) = "in statement:\n" ++ printStmt stmt ++ "\n" ++ show err
   show (TopDefError td err) = "in function:\n" ++ printTopDef td ++ "\n" ++ show err
   show (UnexpectedBoolType p) = "unexpected boolean at " ++ at p
@@ -549,8 +554,10 @@ typeCheckStmt (CondElse p be s1 s2) = do
           _else -> asks Done
       )
 typeCheckStmt (While p be s) = do
-  _ <- expectType (Bool p) be
-  typeCheckStmt s
+  ctp <- expectType (Bool p) be
+  case ctp of
+    (Const _ (BoolV True)) -> throwError (InfiniteLoop p)
+    _else -> typeCheckStmt s
 typeCheckStmt (SExp _ e) = do
   _ <- typeCheckExpr e
   asks Done

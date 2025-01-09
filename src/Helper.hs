@@ -73,6 +73,6 @@ printArg :: Arg -> String
 printArg (Arg _ tp idt) = printType tp ++ " " ++ printIdent idt
 
 printTopDef :: TopDef -> String
-printTopDef (FnDef p ret fn args _) =
-  printLineNr p ++ " | " ++ show ret ++ " " ++ show fn ++ "(" ++ foldr (\t acc -> printArg t ++ (if null acc then "" else ", " ++ acc)) "" args ++ ")"
+printTopDef (FnDef p ret (Ident fnname) args _) =
+  printLineNr p ++ " | " ++ printType ret ++ " " ++ fnname ++ "(" ++ foldr (\t acc -> printArg t ++ (if null acc then "" else ", " ++ acc)) "" args ++ ")"
 
