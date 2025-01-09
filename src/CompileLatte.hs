@@ -105,7 +105,7 @@ usage = do
         "  --cfg-ast   Dump CFG in DOT format",
         "  --cfg-fir   Dump FIRCFG in DOT format",
         "  --cfg-ssa   Dump SSACFG in DOT format",
-        "  --llvm-ir    Dump LLVM IR"
+        "  --llvm-ir   Dump LLVM IR"
       ]
 
 main :: IO ()

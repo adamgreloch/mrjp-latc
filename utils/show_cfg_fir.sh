@@ -1,3 +1,3 @@
 #!/bin/sh
-./CompileLatte --cfg-fir "$1" | dot -Tsvg | feh - &
+./latc_llvm --cfg-fir "$1" | dot -Tsvg | feh - &
 cat "$1"

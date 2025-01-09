@@ -22,3 +22,4 @@ small/
 **/*.bc
 **/*.bc_
 latc_llvm
+latc

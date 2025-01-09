@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE StrictData #-}
 
 module CFG
@@ -93,8 +95,8 @@ withLabel :: Label -> Env -> Env
 withLabel lab env = env {currLabel = lab}
 
 addEmptyBB :: Label -> CFGM BB
-addEmptyBB label = do
-  let bb = emptyBB label
+addEmptyBB lab = do
+  let bb = emptyBB lab
   addBBToCFG bb
   return bb
 
@@ -104,16 +106,16 @@ getCurrFnCFG = do
   gets (M.findWithDefault M.empty idt . cfgs)
 
 getBB :: Label -> CFGM BB
-getBB label = do
+getBB lab = do
   cfg <- getCurrFnCFG
-  case M.lookup label cfg of
+  case M.lookup lab cfg of
     Just bb -> return bb
-    Nothing -> addEmptyBB label
+    Nothing -> addEmptyBB lab
 
 putStmtsToBB :: Label -> [Stmt] -> CFGM ()
-putStmtsToBB lab stmts = do
+putStmtsToBB lab ss = do
   bb <- getBB lab
-  let bb' = bb {stmts = stmts}
+  let bb' = bb {stmts = ss}
   mapLabelToBB lab bb'
 
 putBindingsToBB :: Label -> Bindings -> CFGM ()
@@ -191,14 +193,14 @@ endCurrBlock :: CFGM Label
 endCurrBlock = do
   currLab <- asks currLabel
 
-  currStmts <- takeCurrStmts
-  putStmtsToBB currLab currStmts
+  ss <- takeCurrStmts
+  putStmtsToBB currLab ss
 
   debugPrint $
     "endCurrBlock currLab="
       ++ show currLab
       ++ " currStmts:\n"
-      ++ printCode (reverse currStmts)
+      ++ printCode (reverse ss)
 
   currBdgs <- asks currBindings
   putBindingsToBB currLab currBdgs
@@ -290,7 +292,7 @@ procStmts (stmt : t) = do
   currLab_ <- asks currLabel
   debugPrint $ "procStmts currLab=" ++ show currLab_ ++ " stmts:\n" ++ printCode [stmt]
   case stmt of
-    (BStmt _ (Block _ stmts)) -> do
+    (BStmt _ (Block _ ss)) -> do
       -- BStmt can be either inlined into adjacent blocks or is
       -- handled by cond flow already
 
@@ -301,7 +303,7 @@ procStmts (stmt : t) = do
       lab1 <- freshLabel
       addEdgeFromTo currLab lab1 WhenDone
 
-      retLabs <- local (withLabel lab1) $ procStmts stmts
+      retLabs <- local (withLabel lab1) $ procStmts ss
 
       if null retLabs
         then return []
@@ -455,7 +457,7 @@ newSLoc :: CFGM SLoc
 newSLoc = gets (M.size . cfgDefs)
 
 procBlock :: Block -> CFGM [Label]
-procBlock (Block _ stmts) = procStmts stmts
+procBlock (Block _ ss) = procStmts ss
 
 procTopDef :: TopDef -> CFGM ()
 procTopDef (FnDef _ rettp fnname args block) = do
@@ -583,10 +585,10 @@ toDotCFG (Ident fnname) cfg =
     ++ "}"
 
 toDot :: (Printable [a]) => CFGs' [a] -> String
-toDot (cfgs, _) =
+toDot (cfgs_, _) =
   "digraph \"cfgs\" {\noverlap=false;\n"
-    ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs)
+    ++ foldr (\(idt, cfg) acc -> toDotCFG idt cfg ++ "\n" ++ acc) [] (M.toList cfgs_)
     ++ "}"
 
 mapTo :: (CFGInfo -> BB' a -> BB' b) -> CFGs' a -> CFGs' b
-mapTo f (cfgs, info) = (M.map (M.map (f info)) cfgs, info)
+mapTo f (cfgs_, info) = (M.map (M.map (f info)) cfgs_, info)

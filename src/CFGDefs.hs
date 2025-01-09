@@ -1,3 +1,6 @@
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 module CFGDefs where
 
 import AbsLatte (Ident (..), Type)
@@ -77,13 +80,13 @@ succFalse :: BB' a -> Maybe Label
 succFalse = succWhen WhenFalse
 
 emptyBB :: Label -> BB' [a]
-emptyBB label = BB' {label, stmts = [], preds = [], succs = [], bindings = M.empty}
+emptyBB lab = BB' {label = lab, stmts = [], preds = [], succs = [], bindings = M.empty}
 
 lookupBB :: Label -> CFG' [a] -> BB' [a]
-lookupBB label cfg = do
-  case M.lookup label cfg of
+lookupBB lab cfg = do
+  case M.lookup lab cfg of
     Just bb -> bb
-    Nothing -> emptyBB label
+    Nothing -> emptyBB lab
 
 replaceRefToLabel :: Label -> Label -> Node -> CFG' [a] -> CFG' [a]
 replaceRefToLabel labFrom labTo (FnBlock lab) cfg =

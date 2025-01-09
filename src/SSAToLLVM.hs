@@ -1,3 +1,5 @@
+{-# LANGUAGE ImportQualifiedPost #-}
+
 module SSAToLLVM (toLLVM) where
 
 import AbsLatte (Ident (..), Type)
@@ -263,6 +265,7 @@ irCFGs cfgs = do
   mapM_
     ( \(fidt@(Ident fns), bb) -> do
         (rettp, args) <- lookupFn fidt
+        emitGlobally ""
         emitGlobally $
           "define"
             % printType rettp
@@ -293,6 +296,7 @@ toLLVM (SSA (cfgs, info)) = do
   (_, st) <- runStateT m initStore
   let prolog =
         [ "target triple = \"x86_64-pc-linux-gnu\"",
+          "",
           "declare void @printInt(i32)",
           "declare void @printString(i8*)",
           "declare i8* @readString()",

@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module Common where
 
 import AbsLatte (Stmt, Stmt' (..))

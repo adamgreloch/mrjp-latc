@@ -1,3 +1,6 @@
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 module SSA (toSSA, SSA (..)) where
 
 import AbsLatte (Ident (Ident))

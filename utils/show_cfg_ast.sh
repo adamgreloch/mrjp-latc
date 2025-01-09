@@ -1,2 +1,2 @@
 #!/bin/sh
-./CompileLatte --cfg-ast "$1" | dot -Tsvg | feh - &
+./latc_llvm --cfg-ast "$1" | dot -Tsvg | feh - &

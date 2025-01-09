@@ -1,5 +1,6 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE CPP #-}
 
 module FIR where
 
@@ -47,11 +48,7 @@ instance Show Loc where
   show (LImmInt i) = show i
   show (LImmBool True) = "1"
   show (LImmBool False) = "0"
-#if DEBUG
-  show (LAddr tp addr) = show addr ++ "(" ++ show tp ++ ")"
-#else
   show (LAddr _ addr) = show addr
-#endif
   show (LLabel lab) = "%" ++ maybe "?" show lab
   show (LString s) = '\"' : s ++ "\""
 
@@ -138,7 +135,7 @@ data Instr
   deriving (Show)
 
 isRel :: Op2 -> Bool
-isRel LTh = True 
+isRel LTh = True
 isRel LEq = True
 isRel GTh = True
 isRel GEq = True
