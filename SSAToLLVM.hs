@@ -215,7 +215,7 @@ operateOnStrings _ _ _ _ = error "only rel and concat are allowed on strings"
 irBB :: BB' Code -> IRM ()
 irBB bb = do
   emitLabel $ label bb
-  mapM_ irInstr (reverse $ stmts bb)
+  mapM_ irInstr (stmts bb)
 
 strPtrsToIR :: [Int] -> IRM IR
 strPtrsToIR =

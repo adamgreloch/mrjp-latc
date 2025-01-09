@@ -271,13 +271,15 @@ withJumpLabel bb =
         }
     [] -> error "tried setting labels in empty bb?"
 
+reverseCode :: BB' Code -> BB' Code
+reverseCode bb = bb {stmts = reverse (stmts bb)}
+
 genBB :: BB' [Stmt] -> GenM (BB' Code)
 genBB bb = do
-  -- FIXME move to Env?
   modify (\st -> st {blockBindings = bindings bb, blockLabel = label bb})
   genStmts (reverse (stmts bb))
   stmts <- takeCode
-  return $ withJumpLabel $ bb {stmts}
+  return $ reverseCode $ withJumpLabel $ bb {stmts}
 
 genCFGs :: CFGsNoDefs' [Stmt] -> GenM (CFGsNoDefs' Code)
 genCFGs = mapM $ mapM genBB

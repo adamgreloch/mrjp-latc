@@ -388,15 +388,14 @@ ssaBB bb =
           Just res -> return bb {stmts = res}
           Nothing -> do
             debugPrint "======== ssaBB : begin ========"
-            stmts' <- ssaCode (reverse $ stmts bb)
+            stmts' <- ssaCode (stmts bb)
             debugPrint "======== ssaBB : updating phis ========"
             updatePhisInSuccs
             -- TODO observe if needed
             -- updatePhisFromPreds
-            let res = reverse stmts'
-            markVisited (label bb) res
+            markVisited (label bb) stmts'
             debugPrint "======== ssaBB : done ========"
-            return bb {stmts = res}
+            return bb {stmts = stmts'}
     )
 
 emitPhi :: BB' Code -> SSAM (BB' Code)
@@ -408,8 +407,7 @@ emitPhi bb = do
     ( \acc vi -> do
         let (loc, popMap) = fromMaybe (error "impossible") $ M.lookup vi mp
         let op = Phi loc $ map ephiToPhi (M.toList popMap)
-        -- TODO awful, but optimal reversing is a todo
-        return $ acc {stmts = stmts acc ++ [op]}
+        return $ acc {stmts = op : stmts acc}
     )
     bb
     (M.keys mp)
