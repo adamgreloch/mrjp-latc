@@ -91,11 +91,11 @@ usage = do
     unlines
       [ "usage: ./latc_llvm [opts] [files]",
         "where `opts`:",
-        "  --help      Display this help message.",
-        "  --cfg-ast   Print CFG in DOT format.",
-        "  --cfg-fir   Print FIRCFG in DOT format.",
-        "  --cfg-ssa   Print SSACFG in DOT format.",
-        "  --llvm-r    Print LLVM IR."
+        "  --help      Display this help message",
+        "  --cfg-ast   Dump CFG in DOT format",
+        "  --cfg-fir   Dump FIRCFG in DOT format",
+        "  --cfg-ssa   Dump SSACFG in DOT format",
+        "  --llvm-ir    Dump LLVM IR"
       ]
 
 main :: IO ()
