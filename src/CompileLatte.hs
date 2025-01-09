@@ -10,13 +10,16 @@ import GHC.IO.Handle.FD (stderr)
 import Helper
 import LexLatte (Token, mkPosToken)
 import ParLatte (myLexer, pProgram)
+import PrintCFG (toDot, toDotRev)
 import PrintLatte (printTree)
 import SSA
 import SSAToLLVM
 import SkelLatte ()
+import System.Directory (removeFile)
 import System.Environment (getArgs)
+import System.Environment.Blank (getExecutablePath)
 import System.Exit (ExitCode (ExitSuccess), exitFailure)
-import System.FilePath (replaceFileName, takeFileName, dropFileName, (-<.>), (</>))
+import System.FilePath (dropFileName, replaceFileName, takeFileName, (-<.>), (</>))
 import System.IO (hPutStrLn)
 import System.Posix
   ( ProcessStatus (Exited),
@@ -27,8 +30,6 @@ import System.Posix
 import TransformAbsToFIR (genFIR)
 import TypeCheckLatte
 import Prelude hiding (lookup)
-import System.Directory (removeFile)
-import System.Environment.Blank (getExecutablePath)
 
 type Err = Either String
 
@@ -84,7 +85,7 @@ compileProgram v tree o = do
   putStrV v $ "[CFGs]\n" ++ show cfgs
   let fircfgs = genFIR cfgs
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
-  when (v == 1) $ putStrLn $ toDot cfgs
+  when (v == 1) $ putStrLn $ toDotRev cfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
   ssa@(SSA ssacfgs) <- toSSA fircfgs
   putStrV v $ "[SSACFGs]\n" ++ show ssacfgs

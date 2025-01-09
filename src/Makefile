@@ -31,7 +31,7 @@ AbsLatte.hs LexLatte.x ParLatte.y PrintLatte.hs TransformAbsToFIR.hs : Latte.cf
 # Artifical rule to fix post-clean rebuilding when no *.hs changed
 CompileLatte.o : CompileLatte.hs
 
-CompileLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs Common.hs FIR.hs TransformAbsToFIR.hs CFG.hs CFGDefs.hs SSA.hs SSAToLLVM.hs CompileLatte.hs CompileLatte.o
+CompileLatte : AbsLatte.hs LexLatte.hs ParLatte.hs PrintLatte.hs TypeCheckLatte.hs Helper.hs Common.hs FIR.hs TransformAbsToFIR.hs CFG.hs CFGDefs.hs PrintCFG.hs SSA.hs SSAToLLVM.hs CompileLatte.hs CompileLatte.o
 	${GHC} ${GHC_OPTS} $@
 
 # Rules for cleaning generated files.

@@ -101,3 +101,6 @@ replaceRefToLabel _ _ _ cfg = cfg
 
 deleteBB :: BB' a -> CFG' a -> CFG' a
 deleteBB bb = M.delete (label bb)
+
+reverseCode :: BB' [a] -> BB' [a]
+reverseCode bb = bb {stmts = reverse (stmts bb)}

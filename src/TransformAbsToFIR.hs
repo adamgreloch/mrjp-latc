@@ -1,7 +1,7 @@
-{-# LANGUAGE ImportQualifiedPost #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
 module TransformAbsToFIR (genFIR) where
@@ -272,9 +272,6 @@ withJumpLabel bb =
               : t
         }
     [] -> error "tried setting labels in empty bb?"
-
-reverseCode :: BB' Code -> BB' Code
-reverseCode bb = bb {stmts = reverse (stmts bb)}
 
 genBB :: BB' [Stmt] -> GenM (BB' Code)
 genBB bb = do
