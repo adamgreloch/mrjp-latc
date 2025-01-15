@@ -51,13 +51,20 @@ type CFG' a = M.Map Label (BB' a)
 
 type CFGsNoDefs' a = M.Map Ident (CFG' a)
 
+data Opt = CSE deriving (Show, Eq)
+
 data CFGInfo = CFGInfo
   { cfgInfoBindings :: Bindings,
-    cfgInfoDefs :: Defs
+    cfgInfoDefs :: Defs,
+    opts :: [Opt]
   }
   deriving (Show)
 
 type CFGs' a = (CFGsNoDefs' a, CFGInfo)
+
+setOptWhen :: Bool -> Opt -> CFGs' a -> CFGs' a
+setOptWhen True opt (cnd, info) = (cnd, info {opts = opt : opts info})
+setOptWhen False _ cfgs = cfgs
 
 succWhen :: When -> BB' a -> Maybe Label
 succWhen when bb = extractLabel =<< find isBlock (succs bb)

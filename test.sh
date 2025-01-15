@@ -2,6 +2,7 @@
 
 testdir="$1"
 binary="$2"
+opts="$3"
 
 passed=0
 total=0
@@ -23,7 +24,7 @@ check() {
     INPUT="${test_prog%lat}input"
     OUTPUT="${test_prog%lat}output"
 
-    program_output=$(echo 42 | ./$binary $test_prog 2>&1)
+    program_output=$(echo 42 | ./$binary ${opts} $test_prog 2>&1)
     ret_code=$?
 
     echo -ne "--- ${BOLD}$test_prog "

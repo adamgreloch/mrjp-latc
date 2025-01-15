@@ -5,6 +5,8 @@ module Main where
 
 import AbsLatte
 import CFG
+import CFGDefs (Opt (..), setOptWhen)
+import CSE
 import Control.Monad (when)
 import GHC.IO.Handle.FD (stderr)
 import Helper
@@ -81,18 +83,28 @@ compileProgram v tree o = do
   putStrV v $ "[Abstract Syntax]\n" ++ show tree
   putStrV v $ "[Linearized tree]\n" ++ printTree tree
   tcinfo <- typeCheckProgram v tree
+
   cfgs <- genCFGs tcinfo tree
   putStrV v $ "[CFGs]\n" ++ show cfgs
-  let fircfgs = genFIR cfgs
-  putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
   when (v == 1) $ putStrLn $ toDotRev cfgs
+
+  let cfgs' = setOptWhen (v == 0) CSE cfgs
+
+  let fircfgs = genFIR cfgs'
+  putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
   when (v == 2) $ putStrLn $ toDot fircfgs
+
   ssa@(SSA ssacfgs) <- toSSA fircfgs
   putStrV v $ "[SSACFGs]\n" ++ show ssacfgs
   when (v == 3) $ putStrLn $ toDot ssacfgs
-  ir <- toLLVM ssa
+
+  ssa'@(SSA ssacfgs') <- doGCSE ssa
+  when (v == 4) $ putStrLn $ toDot ssacfgs'
+
+  ir <- toLLVM ssa'
   putStrV v $ "[LLVMIR]\n" ++ show ir
-  when (v == 4) $ mapM_ putStrLn ir
+  when (v == 5) $ mapM_ putStrLn ir
+
   writeFile o ""
   mapM_ (\s -> appendFile o (s ++ "\n")) ir
 
@@ -105,8 +117,10 @@ usage = do
         "  --help      Display this help message",
         "  --cfg-ast   Dump CFG in DOT format",
         "  --cfg-fir   Dump FIRCFG in DOT format",
+        "  --cfg-gcse  Dump SSACFG after GCSE in DOT format",
         "  --cfg-ssa   Dump SSACFG in DOT format",
-        "  --llvm-ir   Dump LLVM IR"
+        "  --llvm-ir   Dump LLVM IR",
+        "  --no-opt    Disable optimizations"
       ]
 
 main :: IO ()
@@ -118,5 +132,7 @@ main = do
     "--cfg-ast" : fs -> mapM_ (runFile 1 pProgram) fs
     "--cfg-fir" : fs -> mapM_ (runFile 2 pProgram) fs
     "--cfg-ssa" : fs -> mapM_ (runFile 3 pProgram) fs
-    "--llvm-ir" : fs -> mapM_ (runFile 4 pProgram) fs
+    "--cfg-gcse" : fs -> mapM_ (runFile 4 pProgram) fs
+    "--llvm-ir" : fs -> mapM_ (runFile 5 pProgram) fs
+    "--no-opt" : fs -> mapM_ (runFile 10 pProgram) fs
     fs -> mapM_ (runFile 0 pProgram) fs

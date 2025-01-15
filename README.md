@@ -20,5 +20,5 @@ make clean
 * Translates AST to quadruple called FIR, then to SSA FIR, then to LLVM IR
 * Each transformation stage can be peeked at by passing an appropriate flag to
   the compiler (e.g. `--cfg-ssa` will dump SSA CFG in DOT format)
-* Optimizations: in progress
+* Optimizations: GCSE
 * Extensions: in progress

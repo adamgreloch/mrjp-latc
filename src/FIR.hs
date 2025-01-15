@@ -103,7 +103,7 @@ data Op1
   = Asgn
   | Not
   | Neg
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 -- | Binary operands (Loc := Loc Op2 Loc)
 data Op2
@@ -121,7 +121,7 @@ data Op2
   | NEq
   | And
   | Or
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 data Instr
   = Bin Op2 Loc Loc Loc
@@ -132,7 +132,7 @@ data Instr
   | IRetVoid
   | ILabel Label
   | Phi Loc [(Label, Loc)]
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 isRel :: Op2 -> Bool
 isRel LTh = True

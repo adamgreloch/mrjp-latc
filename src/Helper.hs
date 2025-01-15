@@ -8,7 +8,7 @@ import PrintLatte
 type Verbosity = Int
 
 putStrV :: Verbosity -> String -> IO ()
-putStrV v s = when (v > 4) $ putStrLn s
+putStrV v s = when (v > 10) $ putStrLn s
 
 infixr 9 ~
 (~) :: Type -> Type -> Bool

@@ -526,6 +526,7 @@ genCFGs tcinfo p = do
     ( cfgs st,
       CFGInfo
         { cfgInfoDefs = cfgDefs st,
-          cfgInfoBindings = globalBindings tcinfo
+          cfgInfoBindings = globalBindings tcinfo,
+          opts = []
         }
     )
