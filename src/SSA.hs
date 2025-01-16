@@ -171,8 +171,8 @@ getPreds lab = do
     justBlocks (_ : t) = justBlocks t
     justBlocks [] = []
 
-getSuccs :: Label -> SSAM [Label]
-getSuccs lab = do
+getSuccsFromCFG :: Label -> SSAM [Label]
+getSuccsFromCFG lab = do
   cfg <- asks currCfg
   case M.lookup lab cfg of
     Just bb -> return $ justBlocks $ succs bb
@@ -325,7 +325,7 @@ ssaCode [] = return []
 updatePhisInSuccs :: SSAM ()
 updatePhisInSuccs = do
   currLab <- asks currLabel
-  succs <- getSuccs currLab
+  succs <- getSuccsFromCFG currLab
   mapM_
     ( \succLab -> do
         phisMp <- gets phis

@@ -106,8 +106,30 @@ replaceRefToLabel labFrom labTo (FnBlock lab) cfg =
     repl n = n
 replaceRefToLabel _ _ _ cfg = cfg
 
+startBB :: CFG' a -> BB' a
+startBB cfg = snd (M.findMin cfg)
+
 deleteBB :: BB' a -> CFG' a -> CFG' a
 deleteBB bb = M.delete (label bb)
 
+insertBB :: BB' a -> CFG' a -> CFG' a
+insertBB bb = M.insert (label bb) bb
+
 reverseCode :: BB' [a] -> BB' [a]
 reverseCode bb = bb {stmts = reverse (stmts bb)}
+
+getSuccs :: BB' a -> [Label]
+getSuccs bb = justBlocks $ succs bb
+  where
+    justBlocks :: [(Node, When)] -> [Label]
+    justBlocks ((FnBlock lab1, _) : t) = lab1 : justBlocks t
+    justBlocks (_ : t) = justBlocks t
+    justBlocks [] = []
+
+getSuccsAsBB :: BB' [a] -> CFG' [a] -> [BB' [a]]
+getSuccsAsBB bb cfg = map (`lookupBB` cfg) $ justBlocks $ succs bb
+  where
+    justBlocks :: [(Node, When)] -> [Label]
+    justBlocks ((FnBlock lab1, _) : t) = lab1 : justBlocks t
+    justBlocks (_ : t) = justBlocks t
+    justBlocks [] = []

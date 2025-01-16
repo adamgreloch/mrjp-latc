@@ -88,7 +88,7 @@ compileProgram v tree o = do
   putStrV v $ "[CFGs]\n" ++ show cfgs
   when (v == 1) $ putStrLn $ toDotRev cfgs
 
-  let cfgs' = setOptWhen (v == 0) CSE cfgs
+  let cfgs' = setOptWhen (v == 0 || v == 4) CSE cfgs
 
   let fircfgs = genFIR cfgs'
   putStrV v $ "[FIRCFGs]\n" ++ show fircfgs
